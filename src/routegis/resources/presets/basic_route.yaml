@@ -1,0 +1,10 @@
+id: basic_route
+name: 토목 노선 기본
+layers:
+  - ecology_nature
+  - land_ownership
+  - heritage_protection
+  - power_line
+  - power_support
+  - river_centerline
+  - river_area

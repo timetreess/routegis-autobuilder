@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wfs:WFS_Capabilities
+  xmlns:wfs="http://www.opengis.net/wfs"
+  xmlns:ows="http://www.opengis.net/ows"
+  version="1.1.0"
+>
+  <wfs:FeatureTypeList>
+    <wfs:FeatureType>
+      <wfs:Name>lt_c_ud801</wfs:Name>
+      <wfs:Title>개발제한구역</wfs:Title>
+    </wfs:FeatureType>
+    <FeatureType xmlns="">
+      <Name>lt_l_gimsfault</Name>
+      <Title>단층</Title>
+    </FeatureType>
+    <wfs:FeatureType>
+      <wfs:Name>pmap_od_zone</wfs:Name>
+    </wfs:FeatureType>
+    <wfs:FeatureType>
+      <wfs:Title>이름 없는 레이어</wfs:Title>
+    </wfs:FeatureType>
+  </wfs:FeatureTypeList>
+</wfs:WFS_Capabilities>

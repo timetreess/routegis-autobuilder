@@ -1,0 +1,35 @@
+project:
+  default_buffer: 1000
+  output_crs: EPSG:5186
+download:
+  request_budget_minimum: 100
+  request_budget_per_tile: 16
+  request_budget_maximum: 5000
+  max_split_depth: 32
+  minimum_tile_size_m: 50
+  max_response_bytes: 67108864
+vworld:
+  timeout: 30
+  retry: 3
+  backoff: 0.5
+  page_size: 1000
+  land_ownership_tile_size_m: 5000
+  default_tile_size_m: 10000
+ecology:
+  tile_size_m: 10000
+  timeout: 30
+  retry: 3
+  page_size: 500
+osm:
+  endpoint: https://overpass-api.de/api/interpreter
+  tile_size_m: 25000
+  timeout: 180
+  retry: 2
+cad:
+  snap_tolerance: 0.1
+  chord_tolerance: 0.1
+export:
+  geopackage: true
+  shapefile: true
+qgis:
+  template_version: "3.40.0"

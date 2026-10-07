@@ -1,0 +1,3 @@
+[bandit]
+# Unmodified third-party packages are audited separately by installed version.
+exclude = _vendor,./_vendor,.\_vendor

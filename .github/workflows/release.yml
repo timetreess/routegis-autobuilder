@@ -1,0 +1,89 @@
+---
+name: GitHub Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Prepare release artifacts
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+      - name: Verify tag and project version
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${GITHUB_REF_NAME#v}"
+          metadata_version="$(python -c "import configparser; p=configparser.ConfigParser(); p.read('plugin/metadata.txt', encoding='utf-8'); print(p['general']['version'])")"
+          test "$version" = "$metadata_version"
+      - name: Download security-checked plugin archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: qgis-plugin
+          path: dist
+      - name: Build and validate Python distributions
+        run: |
+          uv build
+          uvx twine check --strict dist/*.whl dist/*.tar.gz
+      - name: Smoke-test installed wheel with offline fixtures
+        run: |
+          uv venv build/wheel-smoke --python 3.12
+          uv pip install --python build/wheel-smoke/bin/python dist/*.whl
+          build/wheel-smoke/bin/routegis build tests/fixtures/sample_route.dxf \
+            --project-name release-smoke --project-type non_linear \
+            --source-crs EPSG:5186 --output-crs EPSG:5186 --buffer 1000 \
+            --output build/wheel-smoke-output --fixture tests/fixtures/spatial_mock.json
+          jq -e '.status == "COMPLETED" and (.layers | length == 7) and all(.layers[]; .status == "success")' \
+            build/wheel-smoke-output/release-smoke/project_manifest.json
+          test -s build/wheel-smoke-output/release-smoke/release-smoke.qgz
+          test -s build/wheel-smoke-output/release-smoke/data/project.gpkg
+          test -s build/wheel-smoke-output/release-smoke/shp/route/선형.shp
+      - name: Generate and verify release checksums
+        working-directory: dist
+        run: |
+          sha256sum --check routegis_autobuilder.*.zip.sha256
+          sha256sum -- *.zip *.zip.sha256 plugins.xml *.whl *.tar.gz | sort -k2 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: release-artifacts
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish tagged release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: release-artifacts
+          path: dist
+      - name: Verify downloaded release artifacts
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

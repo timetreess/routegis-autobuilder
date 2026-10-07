@@ -1,0 +1,31 @@
+{
+  "version": 0.6,
+  "generator": "RouteGIS hand-authored test fixture",
+  "elements": [
+    {
+      "type": "way",
+      "id": 100,
+      "nodes": [1, 2, 3],
+      "geometry": [
+        {"lat": 37.5000, "lon": 127.0000},
+        {"lat": 37.5050, "lon": 127.0050},
+        {"lat": 37.5100, "lon": 127.0100}
+      ],
+      "tags": {"name": "Main transmission", "power": "line"}
+    },
+    {"type": "node", "id": 1, "lat": 37.5000, "lon": 127.0000, "tags": {"power": "tower"}},
+    {"type": "node", "id": 2, "lat": 37.5050, "lon": 127.0050, "tags": {"power": "pole"}},
+    {"type": "node", "id": 99, "lat": 37.5080, "lon": 127.0080, "tags": {"power": "pole"}},
+    {
+      "type": "way",
+      "id": 200,
+      "nodes": [4, 5],
+      "geometry": [
+        {"lat": 37.5120, "lon": 127.0120},
+        {"lat": 37.5160, "lon": 127.0160}
+      ],
+      "tags": {"power": "minor_line"}
+    },
+    {"type": "node", "id": 4, "lat": 37.5120, "lon": 127.0120, "tags": {"power": "pole"}}
+  ]
+}

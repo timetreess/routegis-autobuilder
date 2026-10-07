@@ -1,0 +1,150 @@
+{
+  "version": 0.6,
+  "generator": "RouteGIS hand-authored test fixture",
+  "elements": [
+    {
+      "type": "way",
+      "id": 300,
+      "nodes": [3001, 3002, 3003],
+      "geometry": [
+        {"lat": 37.5050, "lon": 126.9800},
+        {"lat": 37.5070, "lon": 127.0100},
+        {"lat": 37.5090, "lon": 127.0500}
+      ],
+      "tags": {"name": "Fixture River", "waterway": "river"}
+    },
+    {
+      "type": "way",
+      "id": 301,
+      "nodes": [3011, 3012],
+      "geometry": [
+        {"lat": 37.5150, "lon": 127.0020},
+        {"lat": 37.5180, "lon": 127.0180}
+      ],
+      "tags": {"waterway": "stream"}
+    },
+    {
+      "type": "way",
+      "id": 400,
+      "nodes": [4001, 4002, 4003, 4004],
+      "geometry": [
+        {"lat": 37.5000, "lon": 127.0250},
+        {"lat": 37.5000, "lon": 127.0350},
+        {"lat": 37.5100, "lon": 127.0350},
+        {"lat": 37.5100, "lon": 127.0250}
+      ],
+      "tags": {"natural": "water", "water": "river"}
+    },
+    {
+      "type": "way",
+      "id": 401,
+      "nodes": [4011, 4012, 4013, 4014, 4011],
+      "geometry": [
+        {"lat": 37.5130, "lon": 127.0250},
+        {"lat": 37.5130, "lon": 127.0350},
+        {"lat": 37.5200, "lon": 127.0350},
+        {"lat": 37.5200, "lon": 127.0250},
+        {"lat": 37.5130, "lon": 127.0250}
+      ],
+      "tags": {"waterway": "riverbank"}
+    },
+    {
+      "type": "way",
+      "id": 501,
+      "geometry": [
+        {"lat": 37.5000, "lon": 127.0000},
+        {"lat": 37.5000, "lon": 127.0200},
+        {"lat": 37.5200, "lon": 127.0200}
+      ],
+      "tags": {"natural": "water", "water": "river"}
+    },
+    {
+      "type": "way",
+      "id": 502,
+      "geometry": [
+        {"lat": 37.5000, "lon": 127.0000},
+        {"lat": 37.5200, "lon": 127.0000},
+        {"lat": 37.5200, "lon": 127.0200}
+      ],
+      "tags": {"natural": "water", "water": "river"}
+    },
+    {
+      "type": "relation",
+      "id": 500,
+      "members": [
+        {
+          "type": "way",
+          "ref": 501,
+          "role": "outer",
+          "geometry": [
+            {"lat": 37.5000, "lon": 127.0000},
+            {"lat": 37.5000, "lon": 127.0200},
+            {"lat": 37.5200, "lon": 127.0200}
+          ]
+        },
+        {
+          "type": "way",
+          "ref": 502,
+          "role": "outer",
+          "geometry": [
+            {"lat": 37.5000, "lon": 127.0000},
+            {"lat": 37.5200, "lon": 127.0000},
+            {"lat": 37.5200, "lon": 127.0200}
+          ]
+        },
+        {
+          "type": "way",
+          "ref": 503,
+          "role": "inner",
+          "geometry": [
+            {"lat": 37.5060, "lon": 127.0060},
+            {"lat": 37.5060, "lon": 127.0120},
+            {"lat": 37.5120, "lon": 127.0120}
+          ]
+        },
+        {
+          "type": "way",
+          "ref": 504,
+          "role": "inner",
+          "geometry": [
+            {"lat": 37.5060, "lon": 127.0060},
+            {"lat": 37.5120, "lon": 127.0060},
+            {"lat": 37.5120, "lon": 127.0120}
+          ]
+        }
+      ],
+      "tags": {"name": "Relation River", "natural": "water", "type": "multipolygon", "water": "river"}
+    },
+    {
+      "type": "way",
+      "id": 601,
+      "geometry": [
+        {"lat": 37.5220, "lon": 127.0050},
+        {"lat": 37.5220, "lon": 127.0150},
+        {"lat": 37.5280, "lon": 127.0150},
+        {"lat": 37.5280, "lon": 127.0050},
+        {"lat": 37.5220, "lon": 127.0050}
+      ],
+      "tags": {"waterway": "riverbank"}
+    },
+    {
+      "type": "relation",
+      "id": 600,
+      "members": [
+        {
+          "type": "way",
+          "ref": 601,
+          "role": "outer",
+          "geometry": [
+            {"lat": 37.5220, "lon": 127.0050},
+            {"lat": 37.5220, "lon": 127.0150},
+            {"lat": 37.5280, "lon": 127.0150},
+            {"lat": 37.5280, "lon": 127.0050},
+            {"lat": 37.5220, "lon": 127.0050}
+          ]
+        }
+      ],
+      "tags": {"type": "multipolygon", "waterway": "riverbank"}
+    }
+  ]
+}

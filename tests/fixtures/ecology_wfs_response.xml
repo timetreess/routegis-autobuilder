@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wfs:FeatureCollection
+    xmlns:wfs="http://www.opengis.net/wfs"
+    xmlns:gml="http://www.opengis.net/gml"
+    xmlns:open="http://openapi.nie.re.kr">
+  <gml:boundedBy>
+    <gml:Box srsName="EPSG:5186">
+      <gml:coordinates decimal="." cs="," ts=" ">200010,500010 200090,500090</gml:coordinates>
+    </gml:Box>
+  </gml:boundedBy>
+  <gml:featureMember>
+    <open:tbl_opn_eczm fid="tbl_opn_eczm.1">
+      <open:geom>
+        <gml:MultiPolygon srsName="EPSG:5186">
+          <gml:polygonMember>
+            <gml:Polygon>
+              <gml:outerBoundaryIs>
+                <gml:LinearRing>
+                  <gml:coordinates decimal="." cs="," ts=" ">200010,500010 200090,500010 200090,500090 200010,500090 200010,500010</gml:coordinates>
+                </gml:LinearRing>
+              </gml:outerBoundaryIs>
+              <gml:innerBoundaryIs>
+                <gml:LinearRing>
+                  <gml:coordinates decimal="." cs="," ts=" ">200030,500030 200030,500050 200050,500050 200050,500030 200030,500030</gml:coordinates>
+                </gml:LinearRing>
+              </gml:innerBoundaryIs>
+            </gml:Polygon>
+          </gml:polygonMember>
+        </gml:MultiPolygon>
+      </open:geom>
+      <open:eczm_grad>1</open:eczm_grad>
+      <open:vtn_evl_grad>A</open:vtn_evl_grad>
+      <open:smld_evl_grad>B</open:smld_evl_grad>
+      <open:tpgrph_evl_grad>C</open:tpgrph_evl_grad>
+      <open:amplt_evl_grad>D</open:amplt_evl_grad>
+      <open:cln_symbl>N01</open:cln_symbl>
+      <open:plnt_cln_ttle>식생군락</open:plnt_cln_ttle>
+      <open:frph_agcl_code>AG01</open:frph_agcl_code>
+      <open:precise_smld_ttle>정밀소분류</open:precise_smld_ttle>
+      <open:census_ttle>조사구</open:census_ttle>
+      <open:tpgrph_ttle>지형평가</open:tpgrph_ttle>
+    </open:tbl_opn_eczm>
+  </gml:featureMember>
+</wfs:FeatureCollection>

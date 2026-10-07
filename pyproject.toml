@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "routegis-autobuilder"
+version = "0.2.3"
+description = "QGIS-native route drawing to spatial-analysis project builder"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [
+  { name = "한재혁", email = "103619593+timetreess@users.noreply.github.com" },
+]
+dependencies = [
+  "ezdxf==1.4.2",
+  "httpx==0.27.2",
+  "defusedxml>=0.7.1,<1",
+  "PyYAML>=5.4,<7",
+  "shapely>=2.0.2,<3",
+  "pyproj>=3.6.1,<4",
+]
+
+[project.optional-dependencies]
+test = ["build>=1.2", "pytest>=8.3", "pytest-cov>=6"]
+
+[project.scripts]
+routegis = "routegis.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/timetreess/routegis-autobuilder#readme"
+Repository = "https://github.com/timetreess/routegis-autobuilder"
+Issues = "https://github.com/timetreess/routegis-autobuilder/issues"
+Changelog = "https://github.com/timetreess/routegis-autobuilder/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+routegis = ["resources/*.yaml", "resources/presets/*.yaml", "resources/styles/*.qml"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["routegis"]
+omit = ["src/routegis/plugin/*"]

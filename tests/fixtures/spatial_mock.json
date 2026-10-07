@@ -1,0 +1,216 @@
+{
+  "crs": "EPSG:5186",
+  "layers": {
+    "cadastral": {
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "id": "parcel-1",
+          "properties": {
+            "pnu": "1111010100100010000",
+            "지목": "대"
+          },
+          "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+              [
+                [199800.0, 488800.0],
+                [200600.0, 488800.0],
+                [200600.0, 489400.0],
+                [199800.0, 489400.0],
+                [199800.0, 488800.0]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "building": {
+      "error": "mock timeout fixture-key"
+    },
+    "ecology_nature": {
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "id": "tbl_opn_eczm.1",
+          "properties": {
+            "eczm_grad": "1"
+          },
+          "geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [
+              [
+                [
+                  [199850, 488900],
+                  [200250, 488900],
+                  [200250, 489200],
+                  [199850, 489200],
+                  [199850, 488900]
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "land_ownership": {
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "id": "dt_d160.1",
+          "properties": {
+            "data_id": "dt_d160",
+            "lbl": "개인"
+          },
+          "geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [
+              [
+                [
+                  [199900, 488950],
+                  [200350, 488950],
+                  [200350, 489250],
+                  [199900, 489250],
+                  [199900, 488950]
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "heritage_protection": {
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "id": "lt_c_uo301.1",
+          "properties": {
+            "data_id": "lt_c_uo301"
+          },
+          "geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [
+              [
+                [
+                  [199950, 489000],
+                  [200400, 489000],
+                  [200400, 489300],
+                  [199950, 489300],
+                  [199950, 489000]
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "power_line": {
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "id": "way/1001",
+          "properties": {
+            "type": "way",
+            "id": 1001,
+            "tags": {
+              "power": "line"
+            }
+          },
+          "geometry": {
+            "type": "MultiLineString",
+            "coordinates": [
+              [
+                [199800, 489000],
+                [200600, 489200]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "power_support": {
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "id": "node/2001",
+          "properties": {
+            "type": "node",
+            "id": 2001,
+            "tags": {
+              "power": "tower"
+            }
+          },
+          "geometry": {
+            "type": "MultiPoint",
+            "coordinates": [
+              [200000, 489050],
+              [200400, 489150]
+            ]
+          }
+        }
+      ]
+    },
+    "river_centerline": {
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "id": "way/3001",
+          "properties": {
+            "type": "way",
+            "id": 3001,
+            "tags": {
+              "waterway": "river"
+            }
+          },
+          "geometry": {
+            "type": "MultiLineString",
+            "coordinates": [
+              [
+                [199800, 489300],
+                [200600, 489100]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "river_area": {
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "id": "relation/4001",
+          "properties": {
+            "type": "relation",
+            "id": 4001,
+            "tags": {
+              "natural": "water",
+              "water": "river"
+            }
+          },
+          "geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [
+              [
+                [
+                  [199900, 489150],
+                  [200500, 489150],
+                  [200500, 489350],
+                  [199900, 489350],
+                  [199900, 489150]
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

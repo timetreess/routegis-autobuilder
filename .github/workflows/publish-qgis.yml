@@ -1,0 +1,45 @@
+---
+name: Publish QGIS Plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub release tag, for example v0.2.3
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    environment: qgis-plugin-repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download and verify GitHub release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${TAG#v}"
+          asset="routegis_autobuilder.${version}.zip"
+          mkdir dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist --pattern "$asset" --pattern "$asset.sha256"
+          cd dist
+          sha256sum -c "$asset.sha256"
+      - name: Upload to official QGIS plugin repository
+        env:
+          QGIS_TOKEN: ${{ secrets.QGIS_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          curl --fail-with-body --show-error --silent \
+            --request POST "https://plugins.qgis.org/plugins/api/routegis_autobuilder/version/add/" \
+            --header "Authorization: Bearer $QGIS_TOKEN" \
+            --form "package=@dist/routegis_autobuilder.${version}.zip"

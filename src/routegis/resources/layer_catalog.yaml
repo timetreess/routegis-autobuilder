@@ -1,0 +1,219 @@
+catalog_version: "2026-09-22"
+source: "https://www.vworld.kr/dev/v4dv_wmsguide2_s001.do"
+layers:
+  cadastral:
+    name: 연속지적도
+    provider: vworld
+    service_type: wfs
+    endpoint: https://api.vworld.kr/req/wfs
+    data_id: lp_pa_cbnd_bubun
+    geometry_type: MultiPolygon
+    category: cadastral
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: 국토교통부 공간정보 오픈플랫폼(VWorld)
+    dataset_id: lp_pa_cbnd_bubun
+    license_name: VWorld OpenAPI 이용조건
+    license_url: https://www.vworld.kr/dev/v4dv_wmsguide2_s001.do
+  administrative_sido:
+    name: 시도 행정경계
+    provider: vworld
+    service_type: data
+    endpoint: https://api.vworld.kr/req/data
+    data_id: LT_C_ADSIDO_INFO
+    geometry_type: MultiPolygon
+    category: administrative
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: 국토교통부 공간정보 오픈플랫폼(VWorld)
+    dataset_id: LT_C_ADSIDO_INFO
+    license_name: VWorld OpenAPI 이용조건
+    license_url: https://www.vworld.kr/dev/v4dv_wmsguide2_s001.do
+  administrative_sigungu:
+    name: 시군구 행정경계
+    provider: vworld
+    service_type: data
+    endpoint: https://api.vworld.kr/req/data
+    data_id: LT_C_ADSIGG_INFO
+    geometry_type: MultiPolygon
+    category: administrative
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: 국토교통부 공간정보 오픈플랫폼(VWorld)
+    dataset_id: LT_C_ADSIGG_INFO
+    license_name: VWorld OpenAPI 이용조건
+    license_url: https://www.vworld.kr/dev/v4dv_wmsguide2_s001.do
+  administrative_emd:
+    name: 읍면동 행정경계
+    provider: vworld
+    service_type: data
+    endpoint: https://api.vworld.kr/req/data
+    data_id: LT_C_ADEMD_INFO
+    geometry_type: MultiPolygon
+    category: administrative
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: 국토교통부 공간정보 오픈플랫폼(VWorld)
+    dataset_id: LT_C_ADEMD_INFO
+    license_name: VWorld OpenAPI 이용조건
+    license_url: https://www.vworld.kr/dev/v4dv_wmsguide2_s001.do
+  landuse_zone:
+    name: 용도지역
+    provider: vworld
+    service_type: wfs
+    endpoint: https://api.vworld.kr/req/wfs
+    data_id: lt_c_uq111
+    geometry_type: MultiPolygon
+    category: landuse
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: 국토교통부 공간정보 오픈플랫폼(VWorld)
+    dataset_id: lt_c_uq111
+    license_name: VWorld OpenAPI 이용조건
+    license_url: https://www.vworld.kr/dev/v4dv_wmsguide2_s001.do
+  road:
+    name: 도로명주소 도로
+    provider: vworld
+    service_type: wfs
+    endpoint: https://api.vworld.kr/req/wfs
+    data_id: lt_c_sprd
+    geometry_type: MultiLineString
+    category: facility
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: 국토교통부 공간정보 오픈플랫폼(VWorld)
+    dataset_id: lt_c_sprd
+    license_name: VWorld OpenAPI 이용조건
+    license_url: https://www.vworld.kr/dev/v4dv_wmsguide2_s001.do
+  building:
+    name: 건축물정보
+    provider: vworld
+    service_type: wfs
+    endpoint: https://api.vworld.kr/req/wfs
+    data_id: lt_c_bldginfo
+    geometry_type: MultiPolygon
+    category: facility
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: 국토교통부 공간정보 오픈플랫폼(VWorld)
+    dataset_id: lt_c_bldginfo
+    license_name: VWorld OpenAPI 이용조건
+    license_url: https://www.vworld.kr/dev/v4dv_wmsguide2_s001.do
+  ecology_nature:
+    name: 생태자연도
+    provider: ecology
+    service_type: wfs
+    endpoint: https://apis.data.go.kr/B553084/ecoapi/EcologyzmpService/wfs/getEcologyzmpWFS
+    data_id: tbl_opn_eczm
+    geometry_type: MultiPolygon
+    category: ecology
+    request_crs: EPSG:5186
+    response_crs: EPSG:5186
+    publisher: 국립생태원
+    dataset_id: "15057288"
+    license_name: 이용허락범위 제한 없음
+    license_url: https://www.data.go.kr/data/15057288/openapi.do
+    aliases:
+      - 생태 자연도
+      - 생태등급
+  land_ownership:
+    name: 토지소유공간정보
+    provider: vworld
+    service_type: wfs
+    endpoint: https://api.vworld.kr/req/wfs
+    data_id: dt_d160
+    geometry_type: MultiPolygon
+    category: land
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: 국토교통부 공간정보 오픈플랫폼(VWorld)
+    dataset_id: dt_d160
+    license_name: VWorld OpenAPI 이용조건
+    license_url: https://www.vworld.kr/dev/v4dv_wmsguide2_s001.do
+  heritage_protection:
+    name: 국가유산 지정·보호구역
+    provider: vworld
+    service_type: wfs
+    endpoint: https://api.vworld.kr/req/wfs
+    data_id: lt_c_uo301
+    geometry_type: MultiPolygon
+    category: heritage
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: 국토교통부 공간정보 오픈플랫폼(VWorld)
+    dataset_id: lt_c_uo301
+    license_name: VWorld OpenAPI 이용조건
+    license_url: https://www.vworld.kr/dev/v4dv_wmsguide2_s001.do
+    aliases:
+      - 국가유산
+      - 문화유산
+      - 문화재
+  power_line:
+    name: 송전선로
+    provider: osm
+    service_type: overpass
+    endpoint: https://overpass-api.de/api/interpreter
+    data_id: way[power=line]
+    geometry_type: MultiLineString
+    category: power
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: OpenStreetMap contributors
+    dataset_id: openstreetmap
+    license_name: Open Database License (ODbL) 1.0
+    license_url: https://www.openstreetmap.org/copyright
+    aliases:
+      - 송전선
+      - 전력선
+  power_support:
+    name: 송전철탑·지지물
+    provider: osm
+    service_type: overpass
+    endpoint: https://overpass-api.de/api/interpreter
+    data_id: node(w.lines)[power=tower|pole]
+    geometry_type: MultiPoint
+    category: power
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: OpenStreetMap contributors
+    dataset_id: openstreetmap
+    license_name: Open Database License (ODbL) 1.0
+    license_url: https://www.openstreetmap.org/copyright
+    aliases:
+      - 송전탑
+      - 철탑
+      - 전주
+  river_centerline:
+    name: 하천 중심선
+    provider: osm
+    service_type: overpass
+    endpoint: https://overpass-api.de/api/interpreter
+    data_id: way[waterway=river|stream]
+    geometry_type: MultiLineString
+    category: water
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: OpenStreetMap contributors
+    dataset_id: openstreetmap
+    license_name: Open Database License (ODbL) 1.0
+    license_url: https://www.openstreetmap.org/copyright
+    aliases:
+      - 하천중심선
+      - 하천망
+  river_area:
+    name: 하천구역·수면
+    provider: osm
+    service_type: overpass
+    endpoint: https://overpass-api.de/api/interpreter
+    data_id: natural=water+water=river 또는 waterway=riverbank
+    geometry_type: MultiPolygon
+    category: water
+    request_crs: EPSG:4326
+    response_crs: EPSG:4326
+    publisher: OpenStreetMap contributors
+    dataset_id: openstreetmap
+    license_name: Open Database License (ODbL) 1.0
+    license_url: https://www.openstreetmap.org/copyright
+    aliases:
+      - 하천구역
+      - 수면

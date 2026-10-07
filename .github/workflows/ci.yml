@@ -1,0 +1,68 @@
+---
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+      - name: Install test dependencies
+        run: |
+          uv venv --python "${{ matrix.python-version }}"
+          uv pip install --python .venv/bin/python -e ".[test]"
+      - name: Run tests
+        run: .venv/bin/python -m pytest
+
+  plugin-package:
+    name: Plugin package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+      - name: Build QGIS plugin archive
+        run: uv run scripts/build_plugin.py
+      - name: Extract archive for official-repository checks
+        run: |
+          mkdir -p build/plugin-scan
+          python -m zipfile -e dist/routegis_autobuilder.*.zip build/plugin-scan
+      - name: Run blocking security checks
+        working-directory: build/plugin-scan/routegis_autobuilder
+        run: |
+          uvx bandit --ini .bandit -r . -lll --ignore-nosec
+          find . -type f ! -name .secrets.baseline -printf '%P\0' \
+            | xargs -0 uvx --from detect-secrets detect-secrets-hook \
+                --baseline .secrets.baseline
+      - name: Audit vendored dependencies
+        working-directory: build/plugin-scan/routegis_autobuilder
+        run: uvx pip-audit --path _vendor --strict
+      - name: Run informational Flake8 check
+        run: uvx flake8 --exit-zero build/plugin-scan/routegis_autobuilder
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: qgis-plugin
+          path: |
+            dist/routegis_autobuilder.*.zip
+            dist/routegis_autobuilder.*.zip.sha256
+            dist/plugins.xml
+          if-no-files-found: error
