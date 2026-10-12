@@ -93,6 +93,24 @@ def _empty_collection(_: httpx.Request) -> httpx.Response:
     return httpx.Response(200, json={"type": "FeatureCollection", "features": []})
 
 
+def test_catalog_authentication_error_preserves_service_error_code():
+    content = b"""<ServiceExceptionReport><ServiceException code="INVALID_KEY">
+      Unregistered authentication key
+    </ServiceException></ServiceExceptionReport>"""
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, content=content))) as http_client:
+        with pytest.raises(ProviderError, match="INVALID_KEY"):
+            VWorldClient("placeholder", client=http_client).discover_layers()
+
+
+def test_data_authentication_error_preserves_code_even_without_message():
+    payload = {"response": {"status": "ERROR", "error": {"code": "INVALID_KEY"}}}
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))) as http_client:
+        result = VWorldClient("placeholder", client=http_client).fetch_layer(DATA_DEFINITION, _aoi())
+
+    assert result.status == "failed"
+    assert "INVALID_KEY" in (result.error or "")
+
+
 def _polygon_feature(
     identifier: str,
     bounds: tuple[float, float, float, float],
@@ -260,13 +278,17 @@ def test_discover_layers_parses_namespaced_and_plain_feature_types(fixture_direc
     )
 
 
-def test_discover_layers_rejects_response_without_feature_types():
+@pytest.mark.parametrize(("content", "message"), [
+    (b"<WFS_Capabilities/>", "레이어 목록을 찾을 수 없습니다"),
+    (b"<ServiceExceptionReport><ServiceException>Invalid key</ServiceException></ServiceExceptionReport>", "Invalid key"),
+])
+def test_discover_layers_rejects_response_without_feature_types(content, message):
     def handler(_request: httpx.Request):
-        return httpx.Response(200, content=b"<ServiceExceptionReport><ServiceException>Invalid key</ServiceException></ServiceExceptionReport>")
+        return httpx.Response(200, content=content)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
         client = VWorldClient("bad-key", retries=0, client=http_client)
-        with pytest.raises(ProviderError, match="레이어 목록을 찾을 수 없습니다"):
+        with pytest.raises(ProviderError, match=message):
             client.discover_layers()
 
 

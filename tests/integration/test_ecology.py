@@ -74,6 +74,52 @@ def _empty_response(_: httpx.Request) -> httpx.Response:
     return httpx.Response(200, content=EMPTY_COLLECTION)
 
 
+@pytest.mark.parametrize("supplied_key", ["fixture+/=key", "fixture%2B%2F%3Dkey", "fixture%2b%2f%3dkey"])
+def test_service_key_from_portal_is_encoded_exactly_once(supplied_key):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return _empty_response(request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = EcologyClient(supplied_key, client=http_client).fetch_layer(DEFINITION, _aoi())
+
+    assert result.status == "success"
+    assert requests[0].url.params["serviceKey"] == "fixture+/=key"
+    assert b"%25" not in requests[0].url.query
+
+
+@pytest.mark.parametrize("status", [200, 403])
+def test_portal_authentication_error_preserves_reason_code_and_message(status):
+    content = b"""<OpenAPI_ServiceResponse><cmmMsgHeader>
+      <errMsg>SERVICE_KEY_IS_NOT_REGISTERED_ERROR</errMsg>
+      <returnAuthMsg>Unregistered service key</returnAuthMsg>
+      <returnReasonCode>30</returnReasonCode>
+    </cmmMsgHeader></OpenAPI_ServiceResponse>"""
+
+    result = _fetch(lambda _: httpx.Response(status, content=content), retries=0)
+
+    assert result.status == "failed"
+    assert "SERVICE_KEY_IS_NOT_REGISTERED_ERROR" in (result.error or "")
+    assert "30" in (result.error or "")
+    if status == 403:
+        assert "HTTP 403" in (result.error or "")
+
+
+def test_encoded_service_key_is_redacted_in_decoded_and_encoded_errors():
+    supplied_key = "fixture%2B%2F%3Dsecret"
+
+    def handler(request):
+        raise httpx.ConnectError(f"fixture+/=secret {supplied_key} {request.url}", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = EcologyClient(supplied_key, client=http_client, retries=0).fetch_layer(DEFINITION, _aoi())
+
+    assert result.status == "failed"
+    assert "fixture" not in (result.error or "")
+
+
 def _fetch(
     handler: Callable[[httpx.Request], httpx.Response],
     **client_options: object,

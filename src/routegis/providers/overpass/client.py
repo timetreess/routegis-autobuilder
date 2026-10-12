@@ -268,8 +268,20 @@ class OverpassClient:
 
         if last_transport_error is None:
             raise ProviderError("Overpass 요청에 실패했습니다.")
+        # Explain common PC-specific failures without echoing proxy credentials.
+        detail = str(last_transport_error).casefold()
+        if "certificate_verify_failed" in detail or "certificate verify failed" in detail:
+            hint = "HTTPS 인증서 검증 실패. PC의 신뢰 인증서와 사내 보안 프록시 설정을 확인해 주세요."
+        elif "getaddrinfo" in detail or "name or service not known" in detail:
+            hint = "DNS 조회 실패. 인터넷 연결과 DNS 설정을 확인해 주세요."
+        elif isinstance(last_transport_error, httpx.TimeoutException):
+            hint = "서버 연결 또는 응답 시간 초과. 네트워크 상태를 확인한 뒤 다시 시도해 주세요."
+        elif isinstance(last_transport_error, httpx.ProxyError):
+            hint = "프록시 연결 실패. 프록시 주소와 인증 설정을 확인해 주세요."
+        else:
+            hint = "서버 통신 실패. 인터넷 연결, 프록시와 방화벽 설정을 확인해 주세요."
         raise ProviderError(
-            f"Overpass 요청에 실패했습니다: {type(last_transport_error).__name__}"
+            f"Overpass 요청에 실패했습니다: {type(last_transport_error).__name__} · {hint}"
         ) from last_transport_error
 
     @staticmethod

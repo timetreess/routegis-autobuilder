@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote, quote_plus, unquote
 
 
 _URL_WITH_QUERY_PATTERN = re.compile(r"https?://[^\s<>'\"]+\?[^\s<>'\"]+", re.IGNORECASE)
@@ -77,7 +77,7 @@ def redact_sensitive_text(
     if message is None:
         return None
     redacted = str(message)
-    for secret in secrets:
+    for secret in dict.fromkeys(value for secret in secrets for value in (secret, unquote(secret))):
         if not secret:
             continue
         forms = sorted(

@@ -202,7 +202,7 @@ class VWorldClient:
                     self._sleep(self._backoff * (2**attempt))
                     continue
                 break
-        detail = self._redact(str(last_error or "알 수 없는 오류"))
+        detail = self._redact(f"{type(last_error).__name__}: {last_error}" if last_error is not None else "알 수 없는 오류")
         raise ProviderError(f"VWorld 요청에 실패했습니다: {detail}") from last_error
 
     def _request(
@@ -229,6 +229,10 @@ class VWorldClient:
             root = cls._parse_xml(content)
         except ET.ParseError:
             return None
+        return cls._service_error(root)
+
+    @classmethod
+    def _service_error(cls, root: ET.Element) -> str | None:
         for element in root.iter():
             if cls._local_name(element.tag) not in {"Exception", "ServiceException"}:
                 continue
@@ -254,9 +258,13 @@ class VWorldClient:
         context: _FetchContext | None = None,
     ) -> ET.Element:
         try:
-            return self._parse_xml(self._response(endpoint, params, context).content)
+            root = self._parse_xml(self._response(endpoint, params, context).content)
         except ET.ParseError as exc:
             raise ProviderError(f"VWorld XML 응답을 읽을 수 없습니다: {self._redact(str(exc))}") from exc
+        service_error = self._service_error(root)
+        if service_error:
+            raise ProviderError(f"VWorld 서비스 오류: {self._redact(service_error)}")
+        return root
 
     @staticmethod
     def _local_name(tag: str) -> str:
@@ -402,13 +410,17 @@ class VWorldClient:
             status = response.get("status")
             if status == "ERROR":
                 error = response.get("error")
+                code = None
                 if isinstance(error, Mapping):
+                    code = error.get("code")
                     detail = error.get("text")
                     if detail is None or detail == "":
                         detail = error.get("message")
                 else:
                     detail = error
                 message = str(detail).strip() if isinstance(detail, (str, int, float)) else ""
+                if isinstance(code, (str, int)) and str(code).strip():
+                    message = " · ".join(part for part in (str(code).strip(), message) if part)
                 raise ProviderError(message or "VWorld API 오류")
             result = response.get("result")
             if isinstance(result, dict) and isinstance(result.get("featureCollection"), dict):

@@ -846,7 +846,7 @@ def test_wizard_build_resolves_both_separate_keys_with_correct_precedence():
     def assert_precedence(value: ast.AST, loader: str, field: str) -> None:
         assert isinstance(value, ast.BoolOp) and isinstance(value.op, ast.Or)
         assert len(value.values) == 2
-        load_call, temporary_call = value.values
+        temporary_call, load_call = value.values
         assert (
             isinstance(load_call, ast.Call)
             and isinstance(load_call.func, ast.Name)

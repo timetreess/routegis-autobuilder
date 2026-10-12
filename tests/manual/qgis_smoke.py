@@ -458,6 +458,84 @@ def _assert_no_placeholder_leak(result: Any) -> None:
         assert FAKE_ECOLOGY_KEY not in text
 
 
+def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project_root: Path, temporary_root: Path) -> None:
+    """Exercise real Qt fields, credential resolution and all provider request paths."""
+    from dataclasses import replace
+    from unittest.mock import patch
+    from urllib.parse import quote
+
+    import httpx
+
+    from routegis.app.project_service import ProjectService
+    from routegis.environment import load_data_go_kr_service_key, load_vworld_api_key
+
+    ecology_key = "qgis-smoke-ecology+/=placeholder"
+    encoded_key = quote(ecology_key, safe="")
+    dotenv = temporary_root / "provider.env"
+    dotenv.write_text("VWORLD_API_KEY=stale-vworld\nDATA_GO_KR_SERVICE_KEY=stale-ecology\n", encoding="utf-8")
+    real_client = httpx.Client
+    requests = []
+    failure = False
+
+    def handler(request):
+        requests.append(request)
+        if request.url.host == "api.vworld.kr":
+            assert request.url.params["key"] == FAKE_VWORLD_KEY
+            if failure:
+                return httpx.Response(200, text=f'<ServiceExceptionReport><ServiceException code="INVALID_KEY">{FAKE_VWORLD_KEY}</ServiceException></ServiceExceptionReport>')
+            return httpx.Response(200, json={"type": "FeatureCollection", "features": []})
+        if request.url.host == "apis.data.go.kr":
+            assert request.url.params["serviceKey"] == ecology_key
+            assert b"%25" not in request.url.query
+            if failure:
+                return httpx.Response(403, text=f'<OpenAPI_ServiceResponse><cmmMsgHeader><errMsg>SERVICE_KEY_IS_NOT_REGISTERED_ERROR</errMsg><returnReasonCode>30</returnReasonCode><returnAuthMsg>{ecology_key}</returnAuthMsg></cmmMsgHeader></OpenAPI_ServiceResponse>')
+            return httpx.Response(200, text='<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs"/>')
+        assert request.url.host == "overpass-api.de"
+        if failure:
+            raise httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] private-proxy-detail", request=request)
+        return httpx.Response(200, json={"elements": []})
+
+    def mock_client(**kwargs):
+        return real_client(**kwargs, transport=httpx.MockTransport(handler), trust_env=False)
+
+    with patch.object(wizard_module, "load_vworld_api_key", load_vworld_api_key), \
+         patch.object(wizard_module, "load_data_go_kr_service_key", load_data_go_kr_service_key), \
+         patch.object(wizard_module, "PLUGIN_DOTENV", dotenv), \
+         patch.dict(os.environ, {"VWORLD_API_KEY": "stale-vworld", "DATA_GO_KR_SERVICE_KEY": "stale-ecology"}), \
+         patch.object(httpx, "Client", mock_client):
+        wizard = wizard_module.RouteGISWizard(interface)
+        wizard.service = ProjectService(replace(wizard.settings, osm_retry=0))
+        wizard.drawing.setText(str(project_root / "tests" / "fixtures" / "sample_route.dxf"))
+        wizard.output_directory.setText(str(temporary_root / "provider-output"))
+        wizard.vworld_api_key.setText(FAKE_VWORLD_KEY)
+        wizard.data_go_kr_service_key.setText(encoded_key)
+        wizard._analyze()
+        for failure in (False, True):
+            requests.clear()
+            wizard.project_name.setText(f"Provider requests {failure}")
+            wizard._build()
+            assert wizard.result is not None
+            expected_status = "failed" if failure else "success"
+            assert len(wizard.result.downloads) == len(DEFAULT_LAYER_IDS)
+            assert all(result.status == expected_status for result in wizard.result.downloads)
+            assert {request.url.host for request in requests} == {"api.vworld.kr", "apis.data.go.kr", "overpass-api.de"}
+            text = wizard.progress.toPlainText()
+            if failure:
+                for detail in ("INVALID_KEY", "HTTP 403", "SERVICE_KEY_IS_NOT_REGISTERED_ERROR", "인증서", "모두 실패"):
+                    assert detail in text
+            else:
+                assert "해당없음" in text
+            assert str(wizard.result.report_html) in text
+            for artifact in (wizard.result.manifest, wizard.result.report_html, wizard.result.project_directory / "logs" / "app.log"):
+                text += artifact.read_text(encoding="utf-8")
+            for secret in (FAKE_VWORLD_KEY, ecology_key, encoded_key, "private-proxy-detail"):
+                assert secret not in text
+        wizard.close()
+        # Keep the existing reopen/persistence assertion's expected credentials.
+        wizard.data_go_kr_service_key.setText(FAKE_ECOLOGY_KEY)
+        wizard._save_credentials()
+
+
 def _assert_headless_project_layout(project_root: Path, temporary_root: Path) -> None:
     from unittest.mock import patch
 
@@ -629,6 +707,7 @@ def run(project_root: Path, plugin_directory: Path) -> None:
             _assert_native_category_edge_values(temporary_root)
             _assert_headless_project_layout(project_root, temporary_root)
             _assert_empty_result_group_labels(project_root, temporary_root)
+            _assert_wizard_provider_requests(wizard_module, interface, project_root, temporary_root)
 
             wizard.close()
             application.processEvents()

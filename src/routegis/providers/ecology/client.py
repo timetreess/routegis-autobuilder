@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from math import isfinite
+from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -109,7 +110,9 @@ class EcologyClient:
                 f"{DEFAULT_MAX_RESPONSE_BYTES}"
             )
 
-        self._service_key = service_key.strip()
+        # The portal offers both Encoding and Decoding keys. HTTPX encodes params.
+        # unquote (not unquote_plus) preserves literal '+' in a decoded key.
+        self._service_key = unquote(service_key.strip())
         self._retries = max(int(retries), 0)
         self._backoff = max(float(backoff), 0.0)
         self._page_size = min(max(int(page_size), 1), ECOLOGY_MAX_FEATURES)
@@ -178,11 +181,6 @@ class EcologyClient:
                             raise ProviderError(
                                 f"Ecology 리디렉션 응답을 거부했습니다: HTTP {status}"
                             )
-                        if status >= 400:
-                            raise ProviderError(
-                                f"Ecology 요청에 실패했습니다: HTTP {status}"
-                            )
-
                         declared_size = response.headers.get("content-length")
                         if declared_size is not None:
                             try:
@@ -200,6 +198,16 @@ class EcologyClient:
                                     "Ecology 응답 크기 제한을 초과했습니다."
                                 )
                             content.extend(chunk)
+                        if status >= 400:
+                            try:
+                                root = DefusedET.fromstring(bytes(content), forbid_dtd=True)
+                                detail = self._redact(self._service_error(root))
+                            except (ET.ParseError, DefusedXmlException):
+                                detail = ""
+                            suffix = f" · {detail}" if detail else ""
+                            raise ProviderError(
+                                f"Ecology 요청에 실패했습니다: HTTP {status}{suffix}"
+                            )
                         return bytes(content)
                 if retry_delay is not None:
                     self._sleep(retry_delay)
@@ -561,6 +569,17 @@ class EcologyClient:
     def _service_error(cls, root: ET.Element) -> str:
         for element in root.iter():
             _, local_name = cls._qualified_name(element.tag)
+            if local_name == "cmmMsgHeader":
+                fields = {
+                    cls._qualified_name(child.tag)[1]: (child.text or "").strip()
+                    for child in element
+                }
+                detail = " · ".join(
+                    fields[name] for name in ("returnReasonCode", "errMsg", "returnAuthMsg")
+                    if fields.get(name)
+                )
+                if detail:
+                    return detail
             if local_name not in {"Exception", "ExceptionText", "ServiceException"}:
                 continue
             code = element.attrib.get("exceptionCode") or element.attrib.get("code")

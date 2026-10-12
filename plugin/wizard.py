@@ -77,7 +77,7 @@ class RouteGISWizard(QWizard):
         page.setTitle("1. 프로젝트 생성")
         page.setSubTitle(
             "사업명, 저장 위치와 DXF 노선도면을 선택합니다. 서비스 키는 "
-            "환경변수, 플러그인 .env, 저장된 입력 순서로 적용합니다."
+            "입력란의 값(저장된 입력 포함)을 우선 사용하며, 비어 있으면 환경변수, 플러그인 .env 순서로 적용합니다."
         )
         layout = QFormLayout(page)
         self.project_name = QLineEdit()
@@ -86,13 +86,13 @@ class RouteGISWizard(QWizard):
         self.drawing = QLineEdit(str(self.recent.value("drawing", "")))
         self.vworld_api_key = QLineEdit(str(self.recent.value("vworld_api_key", "")))
         self.vworld_api_key.setEchoMode(QLineEdit.Password)
-        self.vworld_api_key.setPlaceholderText(".env 미설정 시 VWorld API Key 입력")
+        self.vworld_api_key.setPlaceholderText("VWorld API Key 입력 · 비워 두면 환경설정 사용")
         self.data_go_kr_service_key = QLineEdit(
             str(self.recent.value("data_go_kr_service_key", ""))
         )
         self.data_go_kr_service_key.setEchoMode(QLineEdit.Password)
         self.data_go_kr_service_key.setPlaceholderText(
-            ".env 미설정 시 공공데이터포털 서비스키 입력"
+            "공공데이터포털 서비스키 입력 · Encoding/Decoding 모두 가능"
         )
         layout.addRow("사업명", self.project_name)
         layout.addRow("프로젝트 저장 위치", self._path_row(self.output_directory, self._choose_output))
@@ -385,7 +385,7 @@ class RouteGISWizard(QWizard):
 
     def _load_vworld_catalog(self) -> None:
         self._save_credentials()
-        api_key = load_vworld_api_key(PLUGIN_DOTENV) or self.vworld_api_key.text().strip()
+        api_key = self.vworld_api_key.text().strip() or load_vworld_api_key(PLUGIN_DOTENV)
         if not api_key:
             message = "프로젝트 화면에 VWorld API Key를 입력하거나 플러그인 .env에 설정해 주세요."
             self.layer_status.setText(f"현재 목록 유지 · {message}")
@@ -451,6 +451,8 @@ class RouteGISWizard(QWizard):
 
     def _build(self):
         self.run_button.setEnabled(False)
+        self.open_button.setEnabled(False)
+        self.result = None
         self.progress.setPlainText("노선과 분석 범위를 생성하고 있습니다…")
         QApplication.processEvents()
         self._save_credentials()
@@ -474,13 +476,22 @@ class RouteGISWizard(QWizard):
                 project_type="non_linear",
             )
             api_key = (
-                load_vworld_api_key(PLUGIN_DOTENV)
-                or self.vworld_api_key.text().strip()
+                self.vworld_api_key.text().strip()
+                or load_vworld_api_key(PLUGIN_DOTENV)
             )
             data_go_kr_service_key = (
-                load_data_go_kr_service_key(PLUGIN_DOTENV)
-                or self.data_go_kr_service_key.text().strip()
+                self.data_go_kr_service_key.text().strip()
+                or load_data_go_kr_service_key(PLUGIN_DOTENV)
             )
+            credential_lines = []
+            for label, field, key in (
+                ("VWorld", self.vworld_api_key, api_key),
+                ("공공데이터포털", self.data_go_kr_service_key, data_go_kr_service_key),
+            ):
+                source = "입력란(저장값 포함)" if field.text().strip() else "환경변수 / 플러그인 .env"
+                credential_lines.append(f"{label} 인증키: {source if key else '미설정'}")
+            self.progress.setPlainText("\n".join([*credential_lines, "공간정보를 수집하고 있습니다…"]))
+            QApplication.processEvents()
             self.result = self.service.build(
                 config,
                 api_key=api_key,
@@ -492,17 +503,34 @@ class RouteGISWizard(QWizard):
             self.recent.remove("domain")
             self.recent.sync()
             lines = [
+                *credential_lines,
+                "",
                 "✓ 선형 레이어 생성",
                 "✓ 분석범위 생성",
-                *[
-                    ("✓ " if item.status == "success" else "⚠ ") + f"{item.layer_id}: {item.status}"
-                    for item in self.result.downloads
-                ],
+            ]
+            failed_count = 0
+            for item in self.result.downloads:
+                definition = self.service.catalog.get(item.layer_id)
+                label = f"{definition.name} [{definition.provider} / {item.layer_id}]"
+                if item.status == "success":
+                    detail = f"성공 · {item.feature_count}개" if item.feature_count else "성공 · 0개 (해당없음)"
+                    lines.append(f"✓ {label}: {detail}")
+                else:
+                    failed_count += 1
+                    error = redact_sensitive_text(item.error, api_key, data_go_kr_service_key)
+                    lines.append(f"⚠ {label}: 실패\n    원인: {error or '공급자가 상세 오류를 반환하지 않았습니다.'}")
+            if failed_count:
+                total = len(self.result.downloads)
+                summary = f"공간정보 {total}개 모두 실패했습니다." if failed_count == total else f"공간정보 {total}개 중 {failed_count}개가 실패했습니다."
+                lines.append(f"\n{summary} 위 원인을 확인해 주세요.")
+            lines.extend([
                 "✓ GeoPackage 생성",
                 "✓ SHP 생성",
                 "✓ QGIS 프로젝트 생성",
                 f"\n{self.result.state.value}",
-            ]
+                f"보고서: {self.result.report_html}",
+                f"로그: {self.result.project_directory / 'logs' / 'app.log'}",
+            ])
             self.progress.setPlainText("\n".join(lines))
             self.open_button.setEnabled(True)
             self._open_project()

@@ -1968,9 +1968,11 @@ def _encoded_secret_forms(secret: str) -> tuple[str, ...]:
     )
 
 
+@pytest.mark.parametrize("encoded_input", [False, True])
 def test_pipeline_redacts_mixed_case_and_nested_encoded_secrets_from_all_artifacts(
     tmp_path: Path,
     fixture_directory: Path,
+    encoded_input: bool,
 ):
     secret = "a/b+?=%"
     secret_forms = _encoded_secret_forms(secret)
@@ -1990,7 +1992,7 @@ def test_pipeline_redacts_mixed_case_and_nested_encoded_secrets_from_all_artifac
             project_name="인코딩 자격증명 마스킹",
             selected_layers=("land_ownership",),
         ),
-        api_key=secret,
+        api_key=quote(secret, safe="") if encoded_input else secret,
         provider=EncodedFailureProvider(),
     )
 

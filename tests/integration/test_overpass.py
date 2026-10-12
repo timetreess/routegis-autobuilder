@@ -1110,9 +1110,27 @@ def test_terminal_transport_error_exposes_only_safe_exception_class():
         )
 
     _assert_atomic_failure(result)
-    assert result.error == "Overpass 요청에 실패했습니다: ConnectError"
+    assert "Overpass 요청에 실패했습니다: ConnectError" in (result.error or "")
     assert secret not in (result.error or "")
     assert "Bearer" not in (result.error or "")
+
+
+@pytest.mark.parametrize(("exception", "message", "expected"), [
+    (httpx.ConnectError, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed", "인증서"),
+    (httpx.ConnectError, "[Errno 11001] getaddrinfo failed", "DNS"),
+    (httpx.ReadTimeout, "", "시간 초과"),
+    (httpx.ProxyError, "proxy authentication failed", "프록시"),
+])
+def test_transport_failures_explain_network_cause_without_exposing_raw_data(exception, message, expected):
+    def handler(request):
+        raise exception(message + " private-token", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = OverpassClient(retries=0, client=http_client).fetch_layer(_definition("power_line"), _aoi())
+
+    assert result.status == "failed"
+    assert expected in (result.error or "")
+    assert "private-token" not in (result.error or "")
 
 
 def test_transient_response_is_closed_before_backoff_sleep():
