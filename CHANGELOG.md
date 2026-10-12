@@ -4,6 +4,16 @@ All notable changes to RouteGIS AutoBuilder are documented here. This project fo
 
 The public repository starts with version 0.2.3. Earlier entries describe the application's development history.
 
+## 0.2.5 - Unreleased
+
+### Fixed
+
+- Use the Wizard's entered or saved API keys ahead of environment and plugin `.env` credentials for both catalog loading and project generation; retain environment fallback for empty fields.
+- Accept both Encoding and Decoding public-data service keys without double URL encoding, and redact both forms from errors and output artifacts.
+- Show each layer's name, provider, feature count and detailed failure reason in the Wizard, including an explicit all-failed summary and report/log paths.
+- Preserve VWorld error codes and public-data gateway authentication reasons, including HTTP 403 responses; explain Overpass certificate, DNS, proxy and timeout failures.
+- Extend regression coverage through actual QGIS widgets and all three providers' HTTP request paths using controlled responses.
+
 ## [0.2.3] - 2026-10-02
 
 ### Changed

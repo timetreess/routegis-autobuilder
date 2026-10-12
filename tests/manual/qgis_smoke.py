@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-EXPECTED_VERSION = "0.2.3"
+EXPECTED_VERSION = "0.2.5"
 DEFAULT_LAYER_IDS = (
     "ecology_nature",
     "land_ownership",

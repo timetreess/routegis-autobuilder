@@ -140,7 +140,7 @@ def test_exact_post_query_bbox_order_and_configurable_endpoint(
     request = requests[0]
     assert request.method == "POST"
     assert str(request.url) == endpoint
-    assert request.headers["User-Agent"] == "RouteGIS-AutoBuilder/0.2.3"
+    assert request.headers["User-Agent"] == "RouteGIS-AutoBuilder/0.2.5"
     expected = expected_template.format(bbox=_bbox_text(_one_tile_bounds(aoi)))
     assert _normalized_query(request) == expected
 

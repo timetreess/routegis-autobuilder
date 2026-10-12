@@ -22,7 +22,7 @@ from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLa
 
 
 DEFAULT_OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
-OVERPASS_USER_AGENT = "RouteGIS-AutoBuilder/0.2.3"
+OVERPASS_USER_AGENT = "RouteGIS-AutoBuilder/0.2.5"
 DEFAULT_MAX_RESPONSE_BYTES = 67_108_864
 TRANSIENT_STATUS = frozenset({429, 502, 503, 504})
 MAX_RETRIES = 2

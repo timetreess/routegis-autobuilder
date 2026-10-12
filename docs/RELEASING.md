@@ -35,10 +35,10 @@ Before publication, the URLs in `plugins.xml` will not resolve to downloadable r
 
 ## Installed-QGIS smoke check
 
-Run the existing smoke script against the extracted release ZIP with QGIS 3.34.3's Python. This checks plugin loading, the Wizard, fixture project generation, native styles and credential redaction. For a standard Windows installation:
+Run the existing smoke script against the extracted release ZIP with QGIS 3.34.3's Python. This checks plugin loading, the Wizard, fixture project generation, native styles and credential redaction. It also exercises all three providers through the Wizard with controlled HTTP responses, including credential precedence, encoded service keys and all-failed diagnostics. For a standard Windows installation:
 
 ```powershell
-python -m zipfile -e release-download/routegis_autobuilder.0.2.3.zip build/release-qgis-smoke
+python -m zipfile -e release-download/routegis_autobuilder.0.2.5.zip build/release-qgis-smoke
 & "C:\Program Files\QGIS 3.34.3\bin\python-qgis.bat" tests/manual/qgis_smoke.py --project-root . --plugin-dir build/release-qgis-smoke/routegis_autobuilder
 ```
 
