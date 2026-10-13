@@ -4,13 +4,16 @@ import argparse
 import configparser
 import importlib
 import os
+import shutil
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Any
 
 
-EXPECTED_VERSION = "0.2.5"
+EXPECTED_VERSION = "0.2.7"
+CORE_PACKAGE = ""
 DEFAULT_LAYER_IDS = (
     "ecology_nature",
     "land_ownership",
@@ -52,6 +55,11 @@ QGIS_PROVIDER_PROPERTIES = {
 }
 FAKE_VWORLD_KEY = "qgis-smoke-vworld-placeholder"
 FAKE_ECOLOGY_KEY = "qgis-smoke-ecology-placeholder"
+
+
+def _core_module(name: str = "") -> Any:
+    # Use QGIS's import hook so test-only core modules also unload on reload.
+    return __import__(f"{CORE_PACKAGE}.{name}" if name else CORE_PACKAGE, fromlist=["*"])
 
 
 class _Canvas:
@@ -111,6 +119,7 @@ def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the RouteGIS installed-QGIS smoke test.")
     parser.add_argument("--project-root", required=True, type=Path)
     parser.add_argument("--plugin-dir", required=True, type=Path)
+    parser.add_argument("--previous-plugin-dir", type=Path, help="Test an in-process upgrade from this extracted older plugin.")
     return parser.parse_args()
 
 
@@ -136,7 +145,7 @@ def _checked_ids(wizard: Any) -> tuple[str, ...]:
 
 
 def _assert_wizard_catalog(wizard: Any) -> None:
-    from routegis.models import LayerDefinition
+    LayerDefinition = _core_module("models").LayerDefinition
 
     Qt = getattr(importlib.import_module("qgis.PyQt.QtCore"), "Qt")
     QLineEdit = getattr(
@@ -187,7 +196,7 @@ def _assert_wizard_catalog(wizard: Any) -> None:
 
 
 def _assert_wizard_crs_choices(wizard: Any) -> None:
-    from routegis.gis.crs import KOREAN_PROJECTED_CRS
+    KOREAN_PROJECTED_CRS = _core_module("gis.crs").KOREAN_PROJECTED_CRS
     from qgis.core import QgsCoordinateReferenceSystem
 
     expected = {code for code, _name in KOREAN_PROJECTED_CRS}
@@ -212,10 +221,10 @@ def _assert_wizard_crs_choices(wizard: Any) -> None:
     wizard.source_crs.setCurrentIndex(wizard.source_crs.findData("EPSG:5186"))
 
 
-def _configure_fixture_build(wizard: Any, project_root: Path, output_root: Path) -> None:
-    from routegis.cli import FixtureProvider
+def _configure_fixture_build(wizard: Any, project_root: Path, output_root: Path, provider=None) -> None:
+    FixtureProvider = _core_module("cli").FixtureProvider
 
-    fixture = FixtureProvider(project_root / "tests" / "fixtures" / "spatial_mock.json")
+    fixture = provider or FixtureProvider(project_root / "tests" / "fixtures" / "spatial_mock.json")
     real_build = wizard.service.build
 
     def fixture_build(config: Any, **kwargs: Any) -> Any:
@@ -225,13 +234,8 @@ def _configure_fixture_build(wizard: Any, project_root: Path, output_root: Path)
         assert kwargs["api_key"] == FAKE_VWORLD_KEY
         assert kwargs["data_go_kr_service_key"] == FAKE_ECOLOGY_KEY
         assert kwargs["domain"] is None
-        return real_build(
-            config,
-            api_key=kwargs["api_key"],
-            data_go_kr_service_key=kwargs["data_go_kr_service_key"],
-            domain=kwargs["domain"],
-            provider=fixture,
-        )
+        assert kwargs["use_native_project"] is False
+        return real_build(config, provider=fixture, **kwargs)
 
     wizard.service.build = fixture_build
     wizard.project_name.setText("QGIS 3.34 Smoke")
@@ -245,6 +249,138 @@ def _configure_fixture_build(wizard: Any, project_root: Path, output_root: Path)
     assert wizard.candidate_table.rowCount() > 0
     wizard.vworld_api_key.setText(FAKE_VWORLD_KEY)
     wizard.data_go_kr_service_key.setText(FAKE_ECOLOGY_KEY)
+
+
+def _wait_for_build(wizard: Any, timeout: float = 30) -> None:
+    from time import monotonic, sleep
+    from qgis.PyQt.QtWidgets import QApplication
+
+    deadline = monotonic() + timeout
+    while wizard._build_task is not None and monotonic() < deadline:
+        QApplication.processEvents()
+        sleep(0.01)
+    assert wizard._build_task is None, "background build did not finish within the smoke timeout"
+    QApplication.processEvents()
+
+
+def _click_build(wizard, wizard_module):
+    from unittest.mock import patch
+
+    wizard.setStartId(wizard._result_page_id)
+    wizard.restart()
+    assert wizard.run_button.isEnabled()
+    errors = []
+    with patch.object(wizard_module.QMessageBox, "critical", lambda _, title, message: errors.append(message)):
+        wizard.run_button.click()
+        _wait_for_build(wizard)
+    assert not errors, errors
+    assert wizard.result is not None, wizard.progress.toPlainText()
+    assert wizard.progress_bar.value() == 100
+
+
+def _assert_responsive_build(wizard_module, interface, project_root, temporary_root):
+    from threading import Event, get_ident
+    from time import monotonic
+    from unittest.mock import patch
+    from qgis.PyQt.QtCore import QTimer
+    FixtureProvider = _core_module("cli").FixtureProvider
+
+    main_thread = get_ident()
+    for cancel in (False, True):
+        waiting, release = Event(), Event()
+        worker_threads = []
+
+        class SlowProvider(FixtureProvider):
+            def fetch_layer(self, definition, aoi):
+                worker_threads.append(get_ident())
+                waiting.set()
+                assert release.wait(5), "UI did not respond while provider was waiting"
+                return super().fetch_layer(definition, aoi)
+
+        wizard = wizard_module.RouteGISWizard(interface)
+        _configure_fixture_build(
+            wizard, project_root, temporary_root / f"background-{cancel}",
+            SlowProvider(project_root / "tests" / "fixtures" / "spatial_mock.json"),
+        )
+        wizard.setStartId(wizard._result_page_id)
+        wizard.restart()
+        wizard.show()
+        observed = []
+        receive = wizard._on_build_progress
+
+        def record(percent, message):
+            assert get_ident() == main_thread
+            observed.append((percent, message))
+            receive(percent, message)
+
+        wizard._on_build_progress = record
+        ticks = []
+        started = monotonic()
+
+        def heartbeat():
+            ticks.append(wizard.build_elapsed.text())
+            if waiting.is_set() and monotonic() - started >= 1.2:
+                assert wizard.result is None
+                assert "수집 중" in wizard.progress.toPlainText()
+                assert 0 < wizard.progress_bar.value() < 100
+                assert not wizard.run_button.isEnabled()
+                if cancel:
+                    wizard.reject()
+                    assert wizard._build_task is not None
+                release.set()
+                timer.stop()
+
+        timer = QTimer()
+        timer.setInterval(20)
+        timer.timeout.connect(heartbeat)
+        timer.start()
+        try:
+            wizard._build()
+            assert wizard._build_task is not None and wizard.result is None
+            assert wizard.isVisible() and wizard.progress_bar.isVisible()
+            _wait_for_build(wizard)
+            assert len(ticks) >= 10
+            assert any("00:01" in text for text in ticks)
+            assert worker_threads and all(thread != main_thread for thread in worker_threads)
+            assert observed and all("placeholder" not in message for _, message in observed)
+            assert wizard.run_button.isEnabled() and not wizard._build_timer.isActive()
+            if cancel:
+                assert wizard.result is None
+                assert "취소됨" in wizard.build_stage.text()
+                assert not list((temporary_root / f"background-{cancel}").rglob("project_manifest.json"))
+            else:
+                assert wizard.result is not None and wizard.progress_bar.value() == 100
+                assert "DXF" in wizard.progress.toPlainText()
+                assert "보고서" in wizard.progress.toPlainText()
+                _assert_loaded_project(importlib.import_module("qgis.core").QgsProject.instance(), wizard)
+        finally:
+            release.set()
+            timer.stop()
+            _wait_for_build(wizard)
+            wizard._on_build_progress = receive
+            wizard.close()
+            wizard.deleteLater()
+            timer.deleteLater()
+
+    wizard = wizard_module.RouteGISWizard(interface)
+    _configure_fixture_build(wizard, project_root, temporary_root / "background-failure")
+
+    def fail(config, **kwargs):
+        kwargs["on_progress"](8, f"DXF 읽는 중 {FAKE_VWORLD_KEY}")
+        raise RuntimeError(f"deliberate worker failure {FAKE_VWORLD_KEY}")
+
+    dialogs = []
+    wizard.service.build = fail
+    with patch.object(wizard_module.QMessageBox, "critical", lambda _, title, message: dialogs.append(message)):
+        wizard._build()
+        _wait_for_build(wizard)
+    assert wizard.result is None and wizard.run_button.isEnabled()
+    assert "실패" in wizard.build_stage.text()
+    assert dialogs and "deliberate worker failure" in dialogs[0]
+    assert FAKE_VWORLD_KEY not in wizard.progress.toPlainText() + dialogs[0]
+    assert wizard.progress_bar.value() < 100
+    wizard.close()
+    wizard.deleteLater()
 
 
 def _assert_color(color: Any, expected: tuple[int, int, int, int]) -> None:
@@ -262,6 +398,10 @@ def _assert_native_styles(project: Any) -> None:
     QgsMarkerSymbol = getattr(qgis_core, "QgsMarkerSymbol")
     QgsUnitTypes = getattr(qgis_core, "QgsUnitTypes")
 
+    route = project.mapLayersByName("선형")[0].renderer().symbol()
+    assert abs(route.width() - 2) < 1e-9
+    assert route.symbolLayer(0).widthUnit() == QgsUnitTypes.RenderPixels
+
     fill_styles = {
         "ecology_nature": ((76, 175, 80, 80), (46, 125, 50, 255), 0.8),
         "heritage_protection": ((156, 39, 176, 80), (106, 27, 154, 255), 0.8),
@@ -272,7 +412,7 @@ def _assert_native_styles(project: Any) -> None:
         "power_line": ((141, 74, 45, 255), 1.2),
     }
     marker_styles = {"power_support": ((141, 74, 45, 255), 2.5)}
-    from routegis.providers import LayerCatalog
+    LayerCatalog = _core_module("providers").LayerCatalog
 
     catalog = LayerCatalog()
     for layer_id, style in fill_styles.items():
@@ -312,10 +452,11 @@ def _assert_native_styles(project: Any) -> None:
 
 
 def _assert_native_category_edge_values(temporary_root: Path) -> None:
-    from routegis.gis.gpkg import write_geopackage
-    from routegis.gis.shapefile import write_shapefile
-    from routegis.models import SpatialFeature, SpatialLayer
-    from routegis.qgis.renderers import _apply_native_renderer
+    write_geopackage = _core_module("gis.gpkg").write_geopackage
+    write_shapefile = _core_module("gis.shapefile").write_shapefile
+    SpatialFeature = _core_module("models").SpatialFeature
+    SpatialLayer = _core_module("models").SpatialLayer
+    _apply_native_renderer = _core_module("qgis.renderers")._apply_native_renderer
     from shapely.geometry import Polygon
 
     QgsVectorLayer = getattr(
@@ -380,7 +521,7 @@ def _assert_native_category_edge_values(temporary_root: Path) -> None:
 
 
 def _assert_loaded_project(project: Any, wizard: Any) -> None:
-    from routegis.providers import LayerCatalog
+    LayerCatalog = _core_module("providers").LayerCatalog
 
     QgsVectorLayer = getattr(
         importlib.import_module("qgis.core"),
@@ -466,8 +607,9 @@ def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project
 
     import httpx
 
-    from routegis.app.project_service import ProjectService
-    from routegis.environment import load_data_go_kr_service_key, load_vworld_api_key
+    ProjectService = _core_module("app.project_service").ProjectService
+    load_data_go_kr_service_key = _core_module("environment").load_data_go_kr_service_key
+    load_vworld_api_key = _core_module("environment").load_vworld_api_key
 
     ecology_key = "qgis-smoke-ecology+/=placeholder"
     encoded_key = quote(ecology_key, safe="")
@@ -514,6 +656,7 @@ def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project
             requests.clear()
             wizard.project_name.setText(f"Provider requests {failure}")
             wizard._build()
+            _wait_for_build(wizard)
             assert wizard.result is not None
             expected_status = "failed" if failure else "success"
             assert len(wizard.result.downloads) == len(DEFAULT_LAYER_IDS)
@@ -534,18 +677,19 @@ def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project
         # Keep the existing reopen/persistence assertion's expected credentials.
         wizard.data_go_kr_service_key.setText(FAKE_ECOLOGY_KEY)
         wizard._save_credentials()
+        wizard.deleteLater()
 
 
 def _assert_headless_project_layout(project_root: Path, temporary_root: Path) -> None:
     from unittest.mock import patch
 
-    from routegis.app.project_service import ProjectService
-    from routegis.cli import FixtureProvider
-    from routegis.models import ProjectConfig
-    from routegis.providers import LayerCatalog
+    ProjectService = _core_module("app.project_service").ProjectService
+    FixtureProvider = _core_module("cli").FixtureProvider
+    ProjectConfig = _core_module("models").ProjectConfig
+    LayerCatalog = _core_module("providers").LayerCatalog
     from qgis.core import QgsProject
 
-    with patch("routegis.qgis.project._native_project", return_value=False):
+    with patch.object(_core_module("qgis.project"), "_native_project", return_value=False):
         result = ProjectService().build(
             ProjectConfig(
                 project_name="Headless layout smoke",
@@ -579,10 +723,10 @@ def _assert_empty_result_group_labels(project_root: Path, temporary_root: Path) 
     from contextlib import nullcontext
     from unittest.mock import patch
 
-    from routegis.app.project_service import ProjectService
-    from routegis.cli import FixtureProvider
-    from routegis.models import ProjectConfig
-    from routegis.providers import LayerCatalog
+    ProjectService = _core_module("app.project_service").ProjectService
+    FixtureProvider = _core_module("cli").FixtureProvider
+    ProjectConfig = _core_module("models").ProjectConfig
+    LayerCatalog = _core_module("providers").LayerCatalog
     from qgis.core import QgsProject
 
     empty_ids = {"land_ownership", "river_centerline", "river_area", "power_line"}
@@ -602,7 +746,7 @@ def _assert_empty_result_group_labels(project_root: Path, temporary_root: Path) 
     )
     catalog = LayerCatalog()
     for native in (True, False):
-        context = nullcontext() if native else patch("routegis.qgis.project._native_project", return_value=False)
+        context = nullcontext() if native else patch.object(_core_module("qgis.project"), "_native_project", return_value=False)
         with context:
             result = ProjectService().build(
                 ProjectConfig(
@@ -625,7 +769,38 @@ def _assert_empty_result_group_labels(project_root: Path, temporary_root: Path) 
         assert not root.findGroup("06_행정구역").children()
 
 
-def run(project_root: Path, plugin_directory: Path) -> None:
+def _load_plugin(interface, plugin_directory, temporary_root, previous_plugin_directory):
+    from qgis import utils
+
+    package = plugin_directory.name
+    release_directory = plugin_directory
+    if previous_plugin_directory is not None:
+        plugin_directory = temporary_root / "plugins" / package
+        shutil.copytree(previous_plugin_directory, plugin_directory, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    sys.path.insert(0, str(plugin_directory.parent))
+    utils.available_plugins.append(package)
+    utils.iface = interface
+    if previous_plugin_directory is not None:
+        assert utils.loadPlugin(package) and utils.startPlugin(package)
+        utils.plugins[package].run()
+        previous_service = utils.plugins[package].wizard.service
+        from inspect import signature
+        print(f"Upgrade source: {_plugin_version(plugin_directory)}, build{signature(previous_service.build)}")
+        assert utils.unloadPlugin(package)
+        # QGIS only tracks modules below the plugin package. The old global
+        # routegis modules survive unloading, even when files are replaced.
+        previous_module = previous_service.__class__.__module__
+        assert (previous_module in sys.modules) == (not previous_module.startswith(f"{package}."))
+        shutil.rmtree(plugin_directory)
+        shutil.copytree(release_directory, plugin_directory, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        importlib.invalidate_caches()
+    assert utils.loadPlugin(package) and utils.startPlugin(package)
+    return utils.plugins[package], plugin_directory
+
+
+def run(project_root: Path, plugin_directory: Path, previous_plugin_directory: Path | None = None) -> None:
+    global CORE_PACKAGE
+
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     project_root = project_root.resolve()
     plugin_directory = plugin_directory.resolve()
@@ -659,14 +834,14 @@ def run(project_root: Path, plugin_directory: Path) -> None:
         application.initQgis()
         try:
             assert Qgis.QGIS_VERSION.startswith("3.34.3")
-            sys.path.insert(0, str(plugin_directory.parent))
-            plugin_module = importlib.import_module(plugin_directory.name)
-            import routegis
-            from routegis.providers.ecology import EcologyClient
-            from routegis.providers.overpass import OverpassClient
-            from routegis.providers.vworld import VWorldClient
+            interface = _Interface(QMainWindow())
+            plugin, plugin_directory = _load_plugin(interface, plugin_directory, temporary_root, previous_plugin_directory)
+            CORE_PACKAGE = f"{plugin_directory.name}.routegis"
+            core = _core_module()
+            EcologyClient = _core_module("providers.ecology").EcologyClient
+            OverpassClient = _core_module("providers.overpass").OverpassClient
+            VWorldClient = _core_module("providers.vworld").VWorldClient
 
-            assert routegis.__version__ == EXPECTED_VERSION
             assert _plugin_version(plugin_directory) == EXPECTED_VERSION
             assert all((EcologyClient, OverpassClient, VWorldClient))
 
@@ -683,9 +858,6 @@ def run(project_root: Path, plugin_directory: Path) -> None:
                 lambda *_paths: "",
             )
 
-            interface = _Interface(QMainWindow())
-            plugin = plugin_module.classFactory(interface)
-            plugin.initGui()
             assert len(interface.toolbar_actions) == len(interface.menu_actions) == 1
             assert not plugin.action.icon().isNull()
             plugin.run()
@@ -696,9 +868,13 @@ def run(project_root: Path, plugin_directory: Path) -> None:
             _assert_wizard_crs_choices(wizard)
 
             _configure_fixture_build(wizard, project_root, temporary_root / "output")
-            wizard._build()
-            application.processEvents()
-            assert wizard.result is not None
+            from inspect import signature
+            print(f"Loaded core: {core.__version__}, build{signature(type(wizard.service).build)}")
+            _click_build(wizard, wizard_module)
+            assert core.__version__ == EXPECTED_VERSION
+            assert type(wizard.service).__module__ == f"{CORE_PACKAGE}.app.project_service"
+            service_path = sys.modules[type(wizard.service).__module__].__file__
+            assert service_path and Path(service_path).resolve().is_relative_to(plugin_directory)
             assert [result.layer_id for result in wizard.result.downloads] == list(DEFAULT_LAYER_IDS)
             assert all(result.status == "success" for result in wizard.result.downloads)
             assert wizard.result.project_file.is_file()
@@ -708,6 +884,7 @@ def run(project_root: Path, plugin_directory: Path) -> None:
             _assert_headless_project_layout(project_root, temporary_root)
             _assert_empty_result_group_labels(project_root, temporary_root)
             _assert_wizard_provider_requests(wizard_module, interface, project_root, temporary_root)
+            _assert_responsive_build(wizard_module, interface, project_root, temporary_root)
 
             wizard.close()
             application.processEvents()
@@ -717,21 +894,36 @@ def run(project_root: Path, plugin_directory: Path) -> None:
             assert reopened_wizard is not None and reopened_wizard.isVisible()
             assert reopened_wizard.vworld_api_key.text() == FAKE_VWORLD_KEY
             assert reopened_wizard.data_go_kr_service_key.text() == FAKE_ECOLOGY_KEY
+
+            from qgis import utils
+            previous_class = type(reopened_wizard.service)
+            assert utils.reloadPlugin(plugin_directory.name)
+            plugin = utils.plugins[plugin_directory.name]
+            plugin.run()
+            assert type(plugin.wizard.service) is not previous_class
+            _configure_fixture_build(plugin.wizard, project_root, temporary_root / "reloaded-output")
+            _click_build(plugin.wizard, importlib.import_module(f"{plugin_directory.name}.wizard"))
+            _assert_loaded_project(QgsProject.instance(), plugin.wizard)
         finally:
             if plugin is not None:
-                plugin.unload()
+                from qgis import utils
+                assert utils.unloadPlugin(plugin_directory.name)
+                assert f"{CORE_PACKAGE}.app.project_service" not in sys.modules
             QgsProject.instance().clear()
             if application is not None:
                 application.processEvents()
+                from qgis.PyQt.QtCore import QCoreApplication, QEvent
+                QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
             QgsApplication.exitQgis()
 
 
 def main() -> int:
     args = _arguments()
     try:
-        run(args.project_root, args.plugin_dir)
+        run(args.project_root, args.plugin_dir, args.previous_plugin_dir)
     except Exception as exc:
         print(f"QGIS smoke failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        traceback.print_exc()
         return 1
     print(f"QGIS 3.34.3 RouteGIS {EXPECTED_VERSION} smoke passed")
     return 0

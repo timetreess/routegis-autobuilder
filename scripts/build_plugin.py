@@ -131,6 +131,7 @@ def _copy_release_sources(destination: Path) -> None:
         "metadata.txt",
         "routegis_plugin.py",
         "wizard.py",
+        "build_task.py",
         ".bandit",
         ".secrets.baseline",
         ".env.example",

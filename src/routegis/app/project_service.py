@@ -8,6 +8,7 @@ import tempfile
 import time
 import uuid
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -436,7 +437,14 @@ class ProjectService:
         data_go_kr_service_key: str = "",
         domain: str | None = None,
         provider: SpatialDataProvider | None = None,
+        on_progress: Callable[[int, str], None] | None = None,
+        use_native_project: bool = True,
     ) -> PipelineResult:
+        def notify(percent: int, message: str) -> None:
+            if on_progress is not None:
+                on_progress(percent, _redact(message, api_key, data_go_kr_service_key) or "")
+
+        notify(0, "입력 설정과 출력 위치 확인 중")
         validate_project_config(config, self.catalog.snapshot())
         validate_projected_metre_crs(config.source_crs)
         validate_projected_metre_crs(config.output_crs)
@@ -451,7 +459,10 @@ class ProjectService:
                 data_go_kr_service_key=data_go_kr_service_key,
                 domain=domain,
                 provider=provider,
+                on_progress=notify,
+                use_native_project=use_native_project,
             )
+            notify(99, "완성된 프로젝트를 최종 폴더에 저장 중")
             _close_project_logger(staging)
             _publish_project(staging, project_directory)
         except BaseException:
@@ -475,11 +486,18 @@ class ProjectService:
         data_go_kr_service_key: str,
         domain: str | None,
         provider: SpatialDataProvider | None,
+        on_progress: Callable[[int, str], None],
+        use_native_project: bool,
     ) -> PipelineResult:
         secrets = (api_key, data_go_kr_service_key)
         log = _logger(project_directory / "logs" / "app.log", *secrets)
         log.info("프로젝트 생성을 시작합니다: %s", config.project_name)
 
+        def report(percent: int, message: str) -> None:
+            log.info(message)
+            on_progress(percent, message)
+
+        report(3, "원본 도면 복사 및 확인 중")
         source_copy = project_directory / "source" / config.source_drawing.name
         shutil.copy2(config.source_drawing, source_copy)
         source_digest = _sha256(source_copy)
@@ -492,6 +510,7 @@ class ProjectService:
                 project_directory / "data" / "raw" / f"{source_copy.stem}.dxf",
             )
 
+        report(8, "DXF 도면의 선 객체 읽는 중")
         reader = DxfReader(dxf_path, config.chord_tolerance)
         lines_by_layer = reader.lines_by_layer()
         cad_warnings = _cad_skip_issues(reader)
@@ -503,6 +522,7 @@ class ProjectService:
                 raise CadReadError("도면의 지원 선 객체가 모두 길이 0이라 프로젝트를 생성할 수 없습니다.")
             raise RouteGISError("도면에 지원하는 선형 객체가 없습니다.")
         source_layers = tuple(sorted(lines_by_layer, key=str.casefold))
+        report(16, "선형 레이어 생성 및 좌표계 변환 중")
         original_layer = create_linework_layer(lines_by_layer, config.source_crs)
         original_layer.name = "linework_original"
         original_layer.display_name = "원본 선형"
@@ -527,7 +547,9 @@ class ProjectService:
             source_crs=config.source_crs,
             output_crs=config.output_crs,
         )
+        report(22, "분석범위 Buffer 생성 중")
         aoi = create_aoi_layer(buffer_source, config.buffer_distance)
+        report(27, "선형·분석범위 Geometry 및 좌표계 검증 중")
         issues = cad_warnings + validate_route_and_aoi(buffer_source, aoi) + korea_sanity_issues(transformed_layer)
         if buffer_source is not transformed_layer:
             issues = validate_layer(transformed_layer) + issues
@@ -536,11 +558,17 @@ class ProjectService:
 
         definitions = self.catalog.select(config.selected_layers)
         downloads: list[DownloadResult] = []
+        report(30, f"공간정보 {len(definitions)}개 수집 시작")
         if definitions:
             owned_providers: dict[str, SpatialDataProvider] = {}
             provider_failures: dict[str, str] = {}
             try:
-                for definition in definitions:
+                for index, definition in enumerate(definitions, start=1):
+                    label = f"[{index}/{len(definitions)}] {definition.name} [{definition.provider}]"
+                    report(
+                        30 + 45 * (index - 1) // len(definitions),
+                        f"{label} 수집 중 · 서버 응답/재시도 대기",
+                    )
                     try:
                         if provider is not None:
                             active_provider = provider
@@ -621,6 +649,13 @@ class ProjectService:
                                 error=_redact(str(exc), *secrets),
                             )
                         )
+                    result = downloads[-1]
+                    detail = (
+                        f"성공 · {result.feature_count}개"
+                        if result.status == "success"
+                        else f"실패 · {result.error or '상세 오류 없음'}"
+                    )
+                    report(30 + 45 * index // len(definitions), f"{label} {detail}")
             finally:
                 for owned_provider in owned_providers.values():
                     close = getattr(owned_provider, "close", None)
@@ -664,6 +699,7 @@ class ProjectService:
             }
         )
         layers = [transformed_layer, aoi, *successful_layers]
+        report(78, "GeoPackage 및 Shapefile 저장 중")
         geopackage, shapefile_mappings = export_layers(
             project_directory,
             layers,
@@ -684,6 +720,7 @@ class ProjectService:
                             layer=layer.name,
                         )
                     )
+        report(88, "QGIS 프로젝트 구성 및 스타일 저장 중")
         project_file = write_qgis_project(
             project_directory / f"{safe_project_name(config.project_name)}.qgz",
             config.project_name,
@@ -693,6 +730,7 @@ class ProjectService:
             config.source_crs,
             template_version=self.settings.qgis_template_version,
             layer_metadata=layer_metadata,
+            use_native=use_native_project,
         )
         state = (
             PipelineState.COMPLETED_WITH_WARNINGS
@@ -700,6 +738,7 @@ class ProjectService:
             or any(result.status != "success" for result in downloads)
             else PipelineState.COMPLETED
         )
+        report(95, "Manifest 및 처리 보고서 작성 중")
         manifest_payload = {
             "project": config.project_name,
             "project_type": config.project_type,

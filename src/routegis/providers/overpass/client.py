@@ -22,9 +22,13 @@ from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLa
 
 
 DEFAULT_OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
-OVERPASS_USER_AGENT = "RouteGIS-AutoBuilder/0.2.5"
+FALLBACK_OVERPASS_ENDPOINTS = (
+    "https://overpass.private.coffee/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+)
+OVERPASS_USER_AGENT = "RouteGIS-AutoBuilder/0.2.6"
 DEFAULT_MAX_RESPONSE_BYTES = 67_108_864
-TRANSIENT_STATUS = frozenset({429, 502, 503, 504})
+TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_RETRIES = 2
 MAX_RING_SEARCH_STATES = 50_000
 MAX_RING_SEARCH_BRANCHES = 100_000
@@ -101,6 +105,12 @@ class OverpassClient:
         sleep: Callable[[float], None] = time.sleep,
     ):
         self._endpoint = self._validated_endpoint(endpoint)
+        # Custom endpoints stay pinned; public-server failover shares the retry budget.
+        self._request_endpoints = (
+            (self._endpoint, *FALLBACK_OVERPASS_ENDPOINTS)
+            if self._endpoint == DEFAULT_OVERPASS_ENDPOINT
+            else (self._endpoint,)
+        )
         for name, value in (
             ("timeout", timeout),
             ("tile_size_m", tile_size_m),
@@ -217,11 +227,13 @@ class OverpassClient:
         last_transport_error: httpx.HTTPError | None = None
         for attempt in range(self._retries + 1):
             context.before_request()
+            endpoint_index = min(attempt, len(self._request_endpoints) - 1)
+            endpoint = self._request_endpoints[endpoint_index]
             retry_transient_status = False
             try:
                 with self._client.stream(
                     "POST",
-                    self._endpoint,
+                    endpoint,
                     content=query.encode("utf-8"),
                     headers={
                         "Content-Type": "text/plain; charset=utf-8",
@@ -237,7 +249,14 @@ class OverpassClient:
                             f"Overpass 리디렉션 응답을 거부했습니다: HTTP {status}"
                         )
                     elif status >= 400:
-                        raise ProviderError(f"Overpass 요청에 실패했습니다: HTTP {status}")
+                        message = f"Overpass 요청에 실패했습니다: HTTP {status}"
+                        if status in TRANSIENT_STATUS:
+                            message += (
+                                " · 서버 혼잡, 일시적 장애 또는 응답 시간 초과. "
+                                f"마지막 서버={urlsplit(endpoint).hostname}, "
+                                f"전송 시도={attempt + 1}회. 잠시 후 다시 시도해 주세요."
+                            )
+                        raise ProviderError(message)
                     else:
                         declared_size = response.headers.get("content-length")
                         if declared_size is not None:
@@ -252,6 +271,11 @@ class OverpassClient:
                             if len(content) + len(chunk) > self._max_response_bytes:
                                 raise ProviderError("Overpass 응답 크기 제한을 초과했습니다.")
                             content.extend(chunk)
+                        # Reuse the working server for subsequent tiles and layers.
+                        self._request_endpoints = (
+                            self._request_endpoints[endpoint_index:]
+                            + self._request_endpoints[:endpoint_index]
+                        )
                         return bytes(content)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_transport_error = exc

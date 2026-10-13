@@ -105,7 +105,7 @@ def _qgis_custom_properties(map_layer: ET.Element) -> dict[str, str]:
                 "MultiLineString",
                 "water",
             ),
-            {"line_color": "25,118,210,255", "line_width": "1.2"},
+            {"line_color": "25,118,210,255", "line_width": "1.2", "line_width_unit": "Point"},
             id="river-line",
         ),
         pytest.param(
@@ -131,7 +131,7 @@ def _qgis_custom_properties(map_layer: ET.Element) -> dict[str, str]:
                 "MultiLineString",
                 "power",
             ),
-            {"line_color": "141,74,45,255", "line_width": "1.2"},
+            {"line_color": "141,74,45,255", "line_width": "1.2", "line_width_unit": "Point"},
             id="power-line",
         ),
         pytest.param(

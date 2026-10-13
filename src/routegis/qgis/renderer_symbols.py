@@ -10,6 +10,7 @@ def _fill_symbol(
     fill: str,
     outline: str,
     outline_width: str,
+    outline_width_unit: str = "Point",
 ) -> None:
     symbol = ET.SubElement(
         parent,
@@ -31,5 +32,5 @@ def _fill_symbol(
     ET.SubElement(
         symbol_layer,
         "prop",
-        {"k": "outline_width_unit", "v": "Point"},
+        {"k": "outline_width_unit", "v": outline_width_unit},
     )

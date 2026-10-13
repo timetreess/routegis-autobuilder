@@ -140,7 +140,7 @@ def test_exact_post_query_bbox_order_and_configurable_endpoint(
     request = requests[0]
     assert request.method == "POST"
     assert str(request.url) == endpoint
-    assert request.headers["User-Agent"] == "RouteGIS-AutoBuilder/0.2.5"
+    assert request.headers["User-Agent"] == "RouteGIS-AutoBuilder/0.2.6"
     expected = expected_template.format(bbox=_bbox_text(_one_tile_bounds(aoi)))
     assert _normalized_query(request) == expected
 
@@ -1022,7 +1022,7 @@ def test_relation_member_way_is_suppressed_even_when_seen_in_an_earlier_tile():
     assert [feature.feature_id for feature in result.layer.features] == ["relation/931"]
 
 
-@pytest.mark.parametrize("status_code", [429, 502, 503, 504])
+@pytest.mark.parametrize("status_code", [429, 500, 502, 503, 504])
 def test_only_approved_transient_statuses_retry_to_three_attempts(status_code: int):
     attempts = 0
     sleeps: list[float] = []
@@ -1049,7 +1049,7 @@ def test_only_approved_transient_statuses_retry_to_three_attempts(status_code: i
     assert sleeps == [0.25, 0.5]
 
 
-@pytest.mark.parametrize("status_code", [400, 401, 404, 500, 501])
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 501])
 def test_non_transient_http_status_is_terminal(status_code: int):
     attempts = 0
 
@@ -1068,6 +1068,132 @@ def test_non_transient_http_status_is_terminal(status_code: int):
     assert attempts == 1
     assert result.request_count == 1
     assert f"HTTP {status_code}" in (result.error or "")
+
+
+@pytest.mark.parametrize("failure", [429, 500, 502, 503, 504, "timeout", "connection"])
+@pytest.mark.parametrize(("layer_id", "feature_count"), [("power_line", 1), ("power_support", 2)])
+def test_default_server_outage_recovers_power_features_from_public_mirror(
+    failure: int | str,
+    layer_id: str,
+    feature_count: int,
+):
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if str(request.url) == DEFAULT_OVERPASS_ENDPOINT:
+            if failure == "timeout":
+                raise httpx.ReadTimeout("busy server", request=request)
+            if failure == "connection":
+                raise httpx.ConnectError("unreachable server", request=request)
+            assert isinstance(failure, int)
+            return httpx.Response(failure)
+        assert str(request.url) == "https://overpass.private.coffee/api/interpreter"
+        return httpx.Response(200, json=_fixture("overpass_power.json"))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = OverpassClient(backoff=0, client=http_client).fetch_layer(
+            _definition(layer_id), _aoi()
+        )
+
+    assert result.status == "success"
+    assert result.layer is not None
+    assert result.feature_count == feature_count
+    assert result.request_count == len(requests) == 2
+    assert requests[0].content == requests[1].content
+    assert result.successful_tile_count == 1
+    assert result.failed_tile_count == 0
+    assert result.failed_tile_bbox is None
+
+
+def test_recovered_mirror_is_reused_for_the_next_power_layer():
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        if str(request.url) == DEFAULT_OVERPASS_ENDPOINT:
+            return httpx.Response(504)
+        return httpx.Response(200, json=_fixture("overpass_power.json"))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        client = OverpassClient(backoff=0, client=http_client)
+        line = client.fetch_layer(_definition("power_line"), _aoi())
+        support = client.fetch_layer(_definition("power_support"), _aoi())
+
+    assert line.status == support.status == "success"
+    assert line.request_count == 2
+    assert support.request_count == 1
+    assert urls == [
+        DEFAULT_OVERPASS_ENDPOINT,
+        "https://overpass.private.coffee/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
+    ]
+
+
+def test_temporary_mirror_error_uses_second_public_mirror_within_retry_limit():
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        if str(request.url) == DEFAULT_OVERPASS_ENDPOINT:
+            return httpx.Response(504)
+        if str(request.url) == "https://overpass.private.coffee/api/interpreter":
+            return httpx.Response(500)
+        assert str(request.url) == "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+        return httpx.Response(200, json=_fixture("overpass_power.json"))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = OverpassClient(backoff=0, client=http_client).fetch_layer(
+            _definition("power_line"), _aoi()
+        )
+
+    assert result.status == "success"
+    assert result.feature_count == 1
+    assert result.request_count == 3
+    assert urls == [
+        DEFAULT_OVERPASS_ENDPOINT,
+        "https://overpass.private.coffee/api/interpreter",
+        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    ]
+
+
+def test_custom_endpoint_retries_only_the_configured_server():
+    urls: list[str] = []
+    endpoint = "https://overpass.example.test/custom/interpreter"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        return httpx.Response(504)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = OverpassClient(endpoint=endpoint, backoff=0, client=http_client).fetch_layer(
+            _definition("power_line"), _aoi()
+        )
+
+    _assert_atomic_failure(result)
+    assert urls == [endpoint] * 3
+    assert result.request_count == 3
+
+
+@pytest.mark.parametrize("retries", [0, 2, 99])
+def test_all_servers_busy_fails_with_bounded_attempts_and_explains_server_cause(retries: int):
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        return httpx.Response(504)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = OverpassClient(retries=retries, backoff=0, client=http_client).fetch_layer(
+            _definition("power_line"), _aoi()
+        )
+
+    _assert_atomic_failure(result)
+    assert result.request_count == len(urls) == min(retries, 2) + 1
+    assert urls[0] == DEFAULT_OVERPASS_ENDPOINT
+    assert "HTTP 504" in (result.error or "")
+    assert "서버" in (result.error or "")
+    assert "시간 초과" in (result.error or "")
 
 
 def test_timeout_and_transport_errors_use_the_same_bounded_retry_policy():
@@ -1314,7 +1440,7 @@ def test_first_terminal_tile_failure_discards_partial_layer_and_stops():
         attempts += 1
         if attempts == 1:
             return httpx.Response(200, json=first_payload)
-        return httpx.Response(500)
+        return httpx.Response(400)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
         result = OverpassClient(retries=2, client=http_client).fetch_layer(

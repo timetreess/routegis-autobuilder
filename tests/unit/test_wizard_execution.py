@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from functools import partial
+from time import monotonic
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -14,6 +16,16 @@ from routegis.errors import RouteGISError
 from routegis.models import DownloadResult, PipelineResult, PipelineState, ProjectConfig
 from routegis.providers.catalog import LayerCatalog
 from routegis.security import redact_sensitive_text
+
+
+class _QueuedBuild:
+    def __init__(self, service, config, **keys):
+        self.service = service
+        self.config = config
+        self.keys = keys
+        self.progress_message = Mock()
+        self.completed = Mock()
+        self.cancel = Mock()
 
 
 def _handler(name, **globals):
@@ -30,6 +42,11 @@ def _handler(name, **globals):
         "load_data_go_kr_service_key": load_data_go_kr_service_key,
         "QApplication": Mock(),
         "QMessageBox": Mock(),
+        "QgsApplication": Mock(),
+        "ProjectBuildTask": _QueuedBuild,
+        "Qt": SimpleNamespace(QueuedConnection=1),
+        "QWizard": SimpleNamespace(CancelButton=1),
+        "monotonic": monotonic,
         **globals,
     }
     exec(compile(module, str(source), "exec"), namespace)
@@ -48,7 +65,7 @@ def wizard(tmp_path):
         report_html=tmp_path / "result" / "reports" / "processing_report.html",
     )
     service = SimpleNamespace(build=Mock(return_value=result), catalog=LayerCatalog())
-    return SimpleNamespace(
+    wizard = SimpleNamespace(
         run_button=Mock(), open_button=Mock(), progress=Mock(), recent=Mock(),
         _save_credentials=Mock(), _open_project=Mock(), service=service,
         project_type="non_linear", project_name=_field("test"),
@@ -61,7 +78,13 @@ def wizard(tmp_path):
         _crs_code=lambda _: "EPSG:5186", source_crs=None, output_crs=None,
         buffer_distance=SimpleNamespace(value=lambda: 1000),
         settings=SimpleNamespace(snap_tolerance=1, chord_tolerance=1),
+        _build_task=None, _vworld_task=None, _build_timer=Mock(),
+        progress_bar=Mock(), build_stage=Mock(), build_elapsed=Mock(), button=Mock(),
+        _set_build_running=Mock(), _append_build_log=Mock(), _on_build_progress=Mock(),
     )
+    wizard._finish_build = partial(_handler("_finish_build"), wizard)
+    wizard._update_build_elapsed = partial(_handler("_update_build_elapsed"), wizard)
+    return wizard
 
 
 @pytest.mark.parametrize("source", ["environment", "dotenv", "clean-pc"])
@@ -76,7 +99,7 @@ def test_build_uses_entered_keys_even_when_other_credentials_exist(wizard, tmp_p
 
     _handler("_build", PLUGIN_DOTENV=dotenv)(wizard)
 
-    kwargs = wizard.service.build.call_args.kwargs
+    kwargs = wizard._build_task.keys
     assert kwargs["api_key"] == "entered-vworld-key"
     assert kwargs["data_go_kr_service_key"] == "entered-ecology-key"
 
@@ -103,7 +126,7 @@ def test_blank_fields_fall_back_to_environment(wizard, tmp_path, monkeypatch):
 
     _handler("_build", PLUGIN_DOTENV=tmp_path / ".env")(wizard)
 
-    kwargs = wizard.service.build.call_args.kwargs
+    kwargs = wizard._build_task.keys
     assert kwargs["api_key"] == "environment-vworld-key"
     assert kwargs["data_go_kr_service_key"] == "environment-ecology-key"
 
@@ -115,8 +138,9 @@ def test_result_shows_all_failed_causes_and_report_location_without_secrets(wiza
     ]
 
     _handler("_build", PLUGIN_DOTENV=tmp_path / ".env")(wizard)
+    wizard._finish_build(None, wizard.service.build.return_value)
 
-    text = wizard.progress.setPlainText.call_args.args[0]
+    text = wizard._append_build_log.call_args.args[0]
     assert "INVALID_KEY" in text
     assert "HTTP 403 SERVICE_KEY_IS_NOT_REGISTERED_ERROR" in text
     assert "토지소유공간정보" in text
@@ -130,7 +154,59 @@ def test_zero_features_are_reported_as_success_not_download_failure(wizard, tmp_
     wizard.service.build.return_value.downloads = [DownloadResult("land_ownership", "success")]
 
     _handler("_build", PLUGIN_DOTENV=tmp_path / ".env")(wizard)
+    wizard._finish_build(None, wizard.service.build.return_value)
 
-    text = wizard.progress.setPlainText.call_args.args[0]
+    text = wizard._append_build_log.call_args.args[0]
     assert "해당없음" in text
     assert "모두 실패" not in text
+
+
+def test_build_does_not_execute_pipeline_on_the_ui_thread(wizard, tmp_path):
+    _handler("_build", PLUGIN_DOTENV=tmp_path / ".env")(wizard)
+
+    wizard.service.build.assert_not_called()
+    assert wizard._build_task is not None
+
+
+def test_live_progress_updates_stage_and_appends_instead_of_replacing_log(wizard, tmp_path):
+    _handler("_build", PLUGIN_DOTENV=tmp_path / ".env")(wizard)
+    _handler("_on_build_progress")(wizard, 42, "생태자연도 수집 중")
+
+    wizard.progress_bar.setValue.assert_called_with(42)
+    wizard.build_stage.setText.assert_called_with("생태자연도 수집 중")
+    wizard._append_build_log.assert_called_with("생태자연도 수집 중")
+    wizard.progress.setPlainText.assert_not_called()
+
+
+def test_failed_build_restores_controls_and_keeps_last_progress(wizard, tmp_path):
+    _handler("_build", PLUGIN_DOTENV=tmp_path / ".env")(wizard)
+    _handler("_on_build_progress")(wizard, 22, "분석범위 생성 중")
+    wizard._finish_build("Buffer error entered-vworld-key")
+
+    assert wizard._build_task is None and wizard.result is None
+    wizard._build_timer.stop.assert_called_once()
+    wizard._set_build_running.assert_called_with(False)
+    wizard.progress_bar.setValue.assert_called_with(22)
+    assert "Buffer error" in wizard.build_stage.setText.call_args.args[0]
+    assert "entered-vworld-key" not in wizard.build_stage.setText.call_args.args[0]
+
+
+def test_cancel_waits_for_worker_then_restores_controls_without_opening_result(wizard, tmp_path):
+    _handler("_build", PLUGIN_DOTENV=tmp_path / ".env")(wizard)
+    task = wizard._build_task
+    _handler("_cancel_build")(wizard)
+    task.cancel.assert_called_once()
+    assert wizard._build_task is task
+    wizard._finish_build(None, None, True)
+    assert wizard._build_task is None and wizard.result is None
+    wizard._open_project.assert_not_called()
+    wizard._set_build_running.assert_called_with(False)
+
+
+def test_elapsed_time_indicates_waiting_without_inventing_percentage(wizard, tmp_path):
+    _handler("_build", PLUGIN_DOTENV=tmp_path / ".env")(wizard)
+    wizard._last_build_update = monotonic() - 40
+    wizard._update_build_elapsed()
+    text = wizard.build_elapsed.setText.call_args.args[0]
+    assert "40초 전" in text and "기다리고" in text
+    wizard.progress_bar.setValue.assert_called_once_with(0)

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import monotonic
 
-from qgis.PyQt.QtCore import QSettings, Qt
+from qgis.PyQt.QtCore import QSettings, Qt, QTimer
+from qgis.PyQt.QtGui import QTextCursor
 from qgis.PyQt.QtWidgets import (
     QApplication,
     QComboBox,
@@ -15,6 +17,7 @@ from qgis.PyQt.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -26,15 +29,17 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.core import QgsApplication, QgsProject, QgsTask
 
-from routegis.app.project_service import ProjectService
-from routegis.config import load_profile, load_settings
-from routegis.environment import load_data_go_kr_service_key, load_vworld_api_key
-from routegis.errors import RouteGISError
-from routegis.gis.crs import KOREAN_PROJECTED_CRS
-from routegis.models import ProjectConfig
-from routegis.providers.catalog import layer_tooltip_lines
-from routegis.providers.vworld.client import VWorldClient
-from routegis.security import redact_sensitive_text
+from .routegis.app.project_service import ProjectService
+from .routegis.config import load_profile, load_settings
+from .routegis.environment import load_data_go_kr_service_key, load_vworld_api_key
+from .routegis.errors import RouteGISError
+from .routegis.gis.crs import KOREAN_PROJECTED_CRS
+from .routegis.models import ProjectConfig
+from .routegis.providers.catalog import layer_tooltip_lines
+from .routegis.providers.vworld.client import VWorldClient
+from .routegis.security import redact_sensitive_text
+
+from .build_task import ProjectBuildTask
 
 
 PLUGIN_DOTENV = Path(__file__).resolve().parent / ".env"
@@ -52,14 +57,21 @@ class RouteGISWizard(QWizard):
         self._vworld_task = None
         self._vworld_checked_ids: set[str] = set()
         self._vworld_cursor_active = False
+        self._build_task = None
+        self._build_started = 0.0
+        self._last_build_update = 0.0
+        self._build_cancel_requested = False
         self.setWindowTitle("RouteGIS AutoBuilder")
         self.setWizardStyle(QWizard.ModernStyle)
         self.setMinimumSize(760, 600)
         self.addPage(self._project_page())
         self._cad_page_id = self.addPage(self._cad_page())
         self.addPage(self._analysis_page())
-        self.addPage(self._result_page())
+        self._result_page_id = self.addPage(self._result_page())
         self.source_crs.currentTextChanged.connect(self.output_crs.setCurrentText)
+        self._build_timer = QTimer(self)
+        self._build_timer.setInterval(1000)
+        self._build_timer.timeout.connect(self._update_build_elapsed)
 
     @staticmethod
     def _path_row(line_edit: QLineEdit, callback) -> QWidget:
@@ -203,7 +215,18 @@ class RouteGISWizard(QWizard):
         self.open_button.clicked.connect(self._open_project)
         self.progress = QTextEdit()
         self.progress.setReadOnly(True)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("단계 진행률 %p%")
+        self.build_stage = QLabel("프로젝트 생성 대기")
+        self.build_stage.setWordWrap(True)
+        self.build_elapsed = QLabel("생성을 누르면 진행 단계와 처리 로그가 표시됩니다.")
+        self.build_elapsed.setWordWrap(True)
         layout.addWidget(self.run_button)
+        layout.addWidget(self.progress_bar)
+        layout.addWidget(self.build_stage)
+        layout.addWidget(self.build_elapsed)
         layout.addWidget(self.progress, 1)
         layout.addWidget(self.open_button)
         return page
@@ -449,16 +472,74 @@ class RouteGISWizard(QWizard):
             layer_id for layer_id in checked_ids if layer_id not in default_ids
         )
 
+    def _set_build_running(self, running: bool) -> None:
+        self.run_button.setEnabled(not running)
+        self.open_button.setEnabled(not running and self.result is not None)
+        for page_id in self.pageIds():
+            if page_id != self._result_page_id:
+                self.page(page_id).setEnabled(not running)
+        for button in (QWizard.BackButton, QWizard.NextButton, QWizard.FinishButton):
+            self.button(button).setEnabled(not running)
+        self.button(QWizard.CancelButton).setEnabled(True)
+        self.button(QWizard.CancelButton).setText("생성 취소" if running else "취소")
+
+    def _append_build_log(self, message: str) -> None:
+        elapsed = max(0, int(monotonic() - self._build_started))
+        self.progress.moveCursor(QTextCursor.End)
+        self.progress.insertPlainText(f"[{elapsed // 60:02d}:{elapsed % 60:02d}] {message}\n")
+        self.progress.ensureCursorVisible()
+
+    def _update_build_elapsed(self) -> None:
+        if self._build_task is None:
+            return
+        now = monotonic()
+        elapsed = int(now - self._build_started)
+        quiet = int(now - self._last_build_update)
+        status = "취소 요청 중" if self._build_cancel_requested else "처리 중"
+        self.build_elapsed.setText(
+            f"{status} · 경과 {elapsed // 60:02d}:{elapsed % 60:02d} · "
+            f"마지막 진행 알림 {quiet}초 전"
+            + (" · 현재 단계의 완료/서버 응답을 기다리고 있습니다." if quiet >= 30 else "")
+        )
+
+    def _on_build_progress(self, percent: int, message: str) -> None:
+        if self._build_task is None:
+            return
+        self._last_build_update = monotonic()
+        self.progress_bar.setValue(percent)
+        self.build_stage.setText(message)
+        self._append_build_log(message)
+        self._update_build_elapsed()
+
+    def _cancel_build(self) -> None:
+        if self._build_task is None or self._build_cancel_requested:
+            return
+        self._build_cancel_requested = True
+        self._build_task.cancel()
+        self.button(QWizard.CancelButton).setEnabled(False)
+        self.build_stage.setText("취소 요청됨 · 현재 처리/서버 요청 종료 후 중단합니다.")
+        self._append_build_log("취소 요청됨 · 현재 단계가 끝나면 임시 결과를 정리합니다.")
+        self._update_build_elapsed()
+
     def _build(self):
-        self.run_button.setEnabled(False)
-        self.open_button.setEnabled(False)
+        if self._build_task is not None:
+            return
+        if self._vworld_task is not None:
+            QMessageBox.warning(self, "목록 불러오는 중", "브이월드 목록 불러오기가 끝난 뒤 생성해 주세요.")
+            return
         self.result = None
-        self.progress.setPlainText("노선과 분석 범위를 생성하고 있습니다…")
-        QApplication.processEvents()
-        self._save_credentials()
+        self._build_started = self._last_build_update = monotonic()
+        self._build_cancel_requested = False
+        self.progress.clear()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("단계 진행률 %p%")
+        self.build_stage.setText("프로젝트 생성 준비 중")
+        self.build_elapsed.setText("처리 중 · 경과 00:00")
+        self._set_build_running(True)
         api_key = ""
         data_go_kr_service_key = ""
         try:
+            self._save_credentials()
             if self.project_type is None:
                 raise RouteGISError("도면 분석을 실행해 주세요.")
             config = ProjectConfig(
@@ -483,30 +564,57 @@ class RouteGISWizard(QWizard):
                 self.data_go_kr_service_key.text().strip()
                 or load_data_go_kr_service_key(PLUGIN_DOTENV)
             )
-            credential_lines = []
             for label, field, key in (
                 ("VWorld", self.vworld_api_key, api_key),
                 ("공공데이터포털", self.data_go_kr_service_key, data_go_kr_service_key),
             ):
                 source = "입력란(저장값 포함)" if field.text().strip() else "환경변수 / 플러그인 .env"
-                credential_lines.append(f"{label} 인증키: {source if key else '미설정'}")
-            self.progress.setPlainText("\n".join([*credential_lines, "공간정보를 수집하고 있습니다…"]))
-            QApplication.processEvents()
-            self.result = self.service.build(
+                self._append_build_log(f"{label} 인증키: {source if key else '미설정'}")
+            self._build_task = ProjectBuildTask(
+                self.service,
                 config,
                 api_key=api_key,
                 data_go_kr_service_key=data_go_kr_service_key,
-                domain=None,
             )
+            self._build_task.progress_message.connect(self._on_build_progress, Qt.QueuedConnection)
+            self._build_task.completed.connect(self._finish_build)
+            self._build_timer.start()
+            QgsApplication.taskManager().addTask(self._build_task)
+        except Exception as exc:
+            safe_error = redact_sensitive_text(exc, api_key, data_go_kr_service_key) or "알 수 없는 오류"
+            self._finish_build(safe_error)
+        finally:
+            api_key = ""
+            data_go_kr_service_key = ""
+
+    def _finish_build(self, error=None, result=None, cancelled=False) -> None:
+        self._build_timer.stop()
+        self._build_task = None
+        elapsed = max(0, int(monotonic() - self._build_started))
+        self.build_elapsed.setText(f"처리 종료 · 경과 {elapsed // 60:02d}:{elapsed % 60:02d}")
+        try:
+            if cancelled:
+                self.build_stage.setText("프로젝트 생성 취소됨")
+                self.progress_bar.setFormat("취소됨 · %p%")
+                self._append_build_log("프로젝트 생성이 취소되었습니다.")
+                return
+            if error or result is None:
+                safe_error = redact_sensitive_text(
+                    error, self.vworld_api_key.text().strip(), self.data_go_kr_service_key.text().strip()
+                ) or "작업이 결과를 반환하지 않았습니다."
+                self.build_stage.setText(f"생성 실패: {safe_error}")
+                self.progress_bar.setFormat("실패 · %p%")
+                self._append_build_log(f"오류: {safe_error}")
+                QMessageBox.critical(self, "프로젝트 생성 실패", safe_error)
+                return
+            self.result = result
+            self.progress_bar.setValue(100)
             self.recent.setValue("output_directory", self.output_directory.text())
             self.recent.setValue("drawing", self.drawing.text())
             self.recent.remove("domain")
             self.recent.sync()
             lines = [
-                *credential_lines,
-                "",
-                "✓ 선형 레이어 생성",
-                "✓ 분석범위 생성",
+                "프로젝트 생성 결과",
             ]
             failed_count = 0
             for item in self.result.downloads:
@@ -517,7 +625,9 @@ class RouteGISWizard(QWizard):
                     lines.append(f"✓ {label}: {detail}")
                 else:
                     failed_count += 1
-                    error = redact_sensitive_text(item.error, api_key, data_go_kr_service_key)
+                    error = redact_sensitive_text(
+                        item.error, self.vworld_api_key.text().strip(), self.data_go_kr_service_key.text().strip()
+                    )
                     lines.append(f"⚠ {label}: 실패\n    원인: {error or '공급자가 상세 오류를 반환하지 않았습니다.'}")
             if failed_count:
                 total = len(self.result.downloads)
@@ -531,20 +641,28 @@ class RouteGISWizard(QWizard):
                 f"보고서: {self.result.report_html}",
                 f"로그: {self.result.project_directory / 'logs' / 'app.log'}",
             ])
-            self.progress.setPlainText("\n".join(lines))
-            self.open_button.setEnabled(True)
+            self._append_build_log("\n".join(lines))
+            self.build_stage.setText("생성 완료 · QGIS에서 프로젝트 여는 중")
             self._open_project()
-        except Exception as exc:
-            safe_error = (
-                redact_sensitive_text(exc, api_key, data_go_kr_service_key)
-                or "알 수 없는 오류"
-            )
-            self.progress.append(f"\n오류: {safe_error}")
-            QMessageBox.critical(self, "프로젝트 생성 실패", safe_error)
+            self.build_stage.setText("생성 완료 · 일부 공간정보 실패 (로그 확인)" if failed_count else "프로젝트 생성 완료")
         finally:
-            api_key = ""
-            data_go_kr_service_key = ""
-            self.run_button.setEnabled(True)
+            self._set_build_running(False)
+
+    def detach_build(self) -> None:
+        """Let plugin unload safely while an in-flight request finishes."""
+        if self._build_task is not None:
+            self._build_task.cancel()
+            self._build_task.progress_message.disconnect(self._on_build_progress)
+            self._build_task.completed.disconnect(self._finish_build)
+            self._build_task = None
+        self._build_timer.stop()
+
+    def reject(self) -> None:
+        if self._build_task is not None:
+            self._cancel_build()
+            return
+        self._save_credentials()
+        super().reject()
 
     def _open_project(self):
         if self.result is None or self.result.project_file is None:
@@ -560,6 +678,10 @@ class RouteGISWizard(QWizard):
         self.iface.mapCanvas().refresh()
 
     def closeEvent(self, event) -> None:
+        if self._build_task is not None:
+            self._cancel_build()
+            event.ignore()
+            return
         self._save_credentials()
         if self._vworld_task is not None:
             self._vworld_task.cancel()

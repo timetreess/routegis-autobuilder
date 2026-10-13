@@ -4,7 +4,28 @@ All notable changes to RouteGIS AutoBuilder are documented here. This project fo
 
 The public repository starts with version 0.2.3. Earlier entries describe the application's development history.
 
-## 0.2.5 - Unreleased
+## 0.2.7 - Unreleased
+
+### Fixed
+
+- Import the bundled core through the plugin's own namespace so an in-session QGIS upgrade cannot combine the new Wizard with an older cached `routegis` service and fail with `build() got an unexpected keyword argument 'on_progress'`.
+- Exercise the real build task with an incompatible global core already loaded, and check the actual project-generation button after upgrades and plugin reloads in installed QGIS.
+
+## 0.2.6
+
+### Added
+
+- Run Wizard project generation in a background QGIS task with live stage progress, elapsed time, time since the last progress event and timestamped per-layer logs.
+- Allow cooperative cancellation after the current operation/request, preserving existing project outputs and cleaning up staging files.
+- Verify UI responsiveness during delayed provider responses, main-thread progress delivery, cancellation and worker failures in installed-QGIS smoke tests.
+
+### Fixed
+
+- Recover from busy Overpass servers through the public Private.coffee and VK Maps mirrors within the existing three-attempt limit, reuse the working server for subsequent layers, retry temporary HTTP 500 errors, and explain exhausted server failures; keep custom endpoints pinned.
+- Use the existing headless QGIS project writer in background tasks so worker threads do not create or access QGIS GUI objects; open the finished project on the main thread.
+- Preserve live logs on completion and restore Wizard controls on success, failure or cancellation.
+
+## 0.2.5
 
 ### Fixed
 

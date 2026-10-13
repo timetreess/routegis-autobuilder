@@ -876,10 +876,8 @@ def test_wizard_build_resolves_both_separate_keys_with_correct_precedence():
         node
         for node in ast.walk(build)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "build"
-        and isinstance(node.func.value, ast.Attribute)
-        and _self_attribute(node.func.value, "service")
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ProjectBuildTask"
     )
     build_keywords = {keyword.arg: keyword.value for keyword in service_build.keywords}
     assert isinstance(build_keywords["api_key"], ast.Name)

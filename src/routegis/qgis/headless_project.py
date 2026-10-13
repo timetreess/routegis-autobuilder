@@ -93,7 +93,7 @@ def _headless_qgs(
         provider_properties = _provider_properties(layer.name, layer_metadata)
         if provider_properties:
             custom_properties = ET.SubElement(map_layer, "customproperties")
-            options = ET.SubElement(custom_properties, "Option")
+            options = ET.SubElement(custom_properties, "Option", {"type": "Map"})
             for name, value in provider_properties.items():
                 ET.SubElement(
                     options,

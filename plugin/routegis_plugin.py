@@ -5,7 +5,7 @@ from pathlib import Path
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QMessageBox
 
-from routegis.errors import ConfigurationError
+from .routegis.errors import ConfigurationError
 
 from .wizard import RouteGISWizard
 
@@ -26,6 +26,7 @@ class RouteGISPlugin:
 
     def unload(self):
         if self.wizard is not None:
+            self.wizard.detach_build()
             self.wizard.close()
             self.wizard = None
         if self.action is not None:

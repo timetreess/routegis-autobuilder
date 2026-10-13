@@ -47,7 +47,7 @@ def _renderer(
         color, width = line_styles.get(
             layer.name,
             (
-                ("214,50,45,255", "0.8")
+                ("214,50,45,255", "2")
                 if layer.category == "route"
                 else ("76,110,143,255", "0.35")
             ),
@@ -55,6 +55,8 @@ def _renderer(
         ET.SubElement(symbol_layer, "prop", {"k": "line_color", "v": color})
         ET.SubElement(symbol_layer, "prop", {"k": "line_style", "v": "solid"})
         ET.SubElement(symbol_layer, "prop", {"k": "line_width", "v": width})
+        unit = "Point" if layer.name in line_styles else "Pixel" if layer.category == "route" else "MM"
+        ET.SubElement(symbol_layer, "prop", {"k": "line_width_unit", "v": unit})
         return
     if symbol_type == "fill":
         fill_styles = {
@@ -67,7 +69,7 @@ def _renderer(
             style = (
                 "214,50,45,30",
                 "214,50,45,255",
-                "0.35",
+                "0.6",
             )
         if style is None and layer.category == "cadastral":
             style = (
@@ -94,6 +96,7 @@ def _renderer(
             fill=fill,
             outline=outline,
             outline_width=outline_width,
+            outline_width_unit="MM" if layer.name == "route_buffer" else "Point",
         )
         return
     symbol = ET.SubElement(

@@ -49,12 +49,14 @@ def write_qgis_project(
     *,
     template_version: str = "3.40.0",
     layer_metadata: Mapping[str, Mapping[str, str]] | None = None,
+    use_native: bool = True,
 ) -> Path:
     path = Path(path).with_suffix(".qgz")
     path.parent.mkdir(parents=True, exist_ok=True)
     _project_relative_path(path.parent, geopackage, label="GeoPackage")
     _project_relative_path(path.parent, source_drawing, label="원본 도면")
-    native = _native_project(
+    # Worker threads use the XML writer, avoiding QGIS QObject creation/access.
+    native = use_native and _native_project(
         path,
         project_name,
         geopackage,
