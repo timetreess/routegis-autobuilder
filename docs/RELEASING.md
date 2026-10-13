@@ -42,7 +42,7 @@ python -m zipfile -e release-download/routegis_autobuilder.0.2.7.zip build/relea
 & "C:\Program Files\QGIS 3.34.3\bin\python-qgis.bat" tests/manual/qgis_smoke.py --project-root . --plugin-dir build/release-qgis-smoke/routegis_autobuilder
 ```
 
-The smoke check uses offline fixtures and isolated settings. Live provider availability and credentials are separate from this check.
+The smoke check uses offline fixtures and isolated settings. It also checks province-based CRS recommendations, automatic CAD preview, source-CRS and Street/Hybrid switching, unchanged raw geometry, stale-preview cleanup and raster/line rendering with a georeferenced local background. Live XYZ tile availability and provider credentials are separate from this check.
 
 Also run the upgrade check using an extracted, previously installed plugin. It loads the older plugin, unloads it through QGIS, replaces its files in the same temporary installation directory, and clicks **프로젝트 생성** without restarting Python. The new plugin must use its own bundled core, reach 100%, open the generated project, and build again after a QGIS plugin reload:
 

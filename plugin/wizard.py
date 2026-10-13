@@ -19,6 +19,7 @@ from qgis.PyQt.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -33,10 +34,12 @@ from .routegis.app.project_service import ProjectService
 from .routegis.config import load_profile, load_settings
 from .routegis.environment import load_data_go_kr_service_key, load_vworld_api_key
 from .routegis.errors import RouteGISError
-from .routegis.gis.crs import KOREAN_PROJECTED_CRS
+from .routegis.gis.crs import KOREAN_PROJECTED_CRS, validate_projected_metre_crs
+from .routegis.gis.crs_recommendation import BUSINESS_REGIONS, recommend_crs
 from .routegis.models import ProjectConfig
 from .routegis.providers.catalog import layer_tooltip_lines
 from .routegis.providers.vworld.client import VWorldClient
+from .routegis.qgis.cad_preview import CadMapPreview
 from .routegis.security import redact_sensitive_text
 
 from .build_task import ProjectBuildTask
@@ -63,12 +66,18 @@ class RouteGISWizard(QWizard):
         self._build_cancel_requested = False
         self.setWindowTitle("RouteGIS AutoBuilder")
         self.setWizardStyle(QWizard.ModernStyle)
-        self.setMinimumSize(760, 600)
+        self.setMinimumSize(860, 700)
         self.addPage(self._project_page())
         self._cad_page_id = self.addPage(self._cad_page())
         self.addPage(self._analysis_page())
         self._result_page_id = self.addPage(self._result_page())
         self.source_crs.currentTextChanged.connect(self.output_crs.setCurrentText)
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(300)
+        self._preview_timer.timeout.connect(self._refresh_preview)
+        self.source_crs.currentTextChanged.connect(self._schedule_preview)
+        self.finished.connect(self._dispose_preview)
         self._build_timer = QTimer(self)
         self._build_timer.setInterval(1000)
         self._build_timer.timeout.connect(self._update_build_elapsed)
@@ -94,6 +103,13 @@ class RouteGISWizard(QWizard):
         layout = QFormLayout(page)
         self.project_name = QLineEdit()
         self.project_name.setPlaceholderText("예: OO 고속도로 기본설계")
+        self.business_region = QComboBox()
+        self.business_region.setEditable(True)
+        self.business_region.setInsertPolicy(QComboBox.NoInsert)
+        self.business_region.addItem("")
+        self.business_region.addItems([region.name for region in BUSINESS_REGIONS])
+        self.business_region.setCurrentText(str(self.recent.value("business_region", "")))
+        self.business_region.lineEdit().setPlaceholderText("예: 경기도, 전라북도 (비워 두면 전국 후보)")
         self.output_directory = QLineEdit(str(self.recent.value("output_directory", "")))
         self.drawing = QLineEdit(str(self.recent.value("drawing", "")))
         self.vworld_api_key = QLineEdit(str(self.recent.value("vworld_api_key", "")))
@@ -107,11 +123,13 @@ class RouteGISWizard(QWizard):
             "공공데이터포털 서비스키 입력 · Encoding/Decoding 모두 가능"
         )
         layout.addRow("사업명", self.project_name)
+        layout.addRow("사업 지역 (시·도)", self.business_region)
         layout.addRow("프로젝트 저장 위치", self._path_row(self.output_directory, self._choose_output))
         layout.addRow("DXF 노선도면", self._path_row(self.drawing, self._choose_drawing))
         layout.addRow("VWorld API Key 입력", self.vworld_api_key)
         layout.addRow("공공데이터포털 서비스키 입력", self.data_go_kr_service_key)
         self.drawing.textChanged.connect(self._invalidate_analysis)
+        self.business_region.currentTextChanged.connect(self._invalidate_analysis)
         self.vworld_api_key.editingFinished.connect(self._save_credentials)
         self.data_go_kr_service_key.editingFinished.connect(self._save_credentials)
         return page
@@ -134,17 +152,31 @@ class RouteGISWizard(QWizard):
         return selector.currentText().split(" — ", 1)[0].strip().upper()
 
     def _cad_page(self) -> QWizardPage:
+        from qgis.gui import QgsMapCanvas, QgsMapToolPan
+
         page = QWizardPage()
         page.setTitle("2. 도면 분석")
         page.setSubTitle(
-            "원본 좌표계를 확인하고 도면을 분석합니다. 모든 지원 선 객체를 Buffer 기준으로 사용합니다."
+            "DXF 좌표와 사업 지역으로 좌표계를 추천합니다. 기본도와 도면을 겹쳐 위치를 확인해 주세요."
         )
         layout = QVBoxLayout(page)
         form = QFormLayout()
+        self.crs_recommendations = QComboBox()
+        self.crs_recommendations.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.crs_recommendations.setMinimumContentsLength(35)
+        self.crs_recommendations.activated.connect(self._apply_recommendation)
+        form.addRow("추천 좌표계 후보", self.crs_recommendations)
         self.source_crs = self._crs_selector("EPSG:5186")
         form.addRow("원본 도면 좌표계", self.source_crs)
         layout.addLayout(form)
-        analyze = QPushButton("도면 분석")
+        self.coordinate_report = QLabel("도면 분석 후 실제 X/Y 범위와 도면 단위를 표시합니다.")
+        self.coordinate_report.setWordWrap(True)
+        self.coordinate_report.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.coordinate_report)
+        self.recommendation_status = QLabel("사업 지역을 입력하면 좌표계 후보를 좁힐 수 있습니다.")
+        self.recommendation_status.setWordWrap(True)
+        layout.addWidget(self.recommendation_status)
+        analyze = QPushButton("도면 다시 분석 · 좌표계 추천")
         analyze.clicked.connect(self._analyze)
         self.candidate_table = QTableWidget(0, 4)
         self.candidate_table.setHorizontalHeaderLabels(["CAD 레이어", "객체 유형", "객체 수", "총 길이"])
@@ -152,7 +184,37 @@ class RouteGISWizard(QWizard):
         self.candidate_table.setSortingEnabled(False)
         self.candidate_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(analyze)
-        layout.addWidget(self.candidate_table)
+        tabs = QTabWidget()
+        map_page = QWidget()
+        map_layout = QVBoxLayout(map_page)
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("11_기본도"))
+        self.preview_basemap = QComboBox()
+        self.preview_basemap.addItem("VWorld Street · 일반지도", "street")
+        self.preview_basemap.addItem("VWorld Hybrid · 위성 + 지명", "hybrid")
+        controls.addWidget(self.preview_basemap)
+        fit_button = QPushButton("도면 전체 보기")
+        controls.addWidget(fit_button)
+        controls.addStretch()
+        map_layout.addLayout(controls)
+        self.preview_canvas = QgsMapCanvas(map_page)
+        self.preview_canvas.setMinimumHeight(240)
+        self._preview = CadMapPreview(self.preview_canvas)
+        self._preview_pan = QgsMapToolPan(self.preview_canvas)
+        self.preview_canvas.setMapTool(self._preview_pan)
+        self.preview_basemap.currentIndexChanged.connect(
+            lambda _: self._preview.set_basemap(self.preview_basemap.currentData())
+        )
+        fit_button.clicked.connect(self._preview.zoom_to_drawing)
+        map_layout.addWidget(self.preview_canvas, 1)
+        self.preview_status = QLabel("도면 분석 후 붉은 선으로 표시합니다.")
+        self.preview_status.setWordWrap(True)
+        self.preview_canvas.renderErrorOccurred.connect(self._preview_render_error)
+        map_layout.addWidget(self.preview_status)
+        map_layout.addWidget(QLabel("드래그: 이동 · 휠: 확대/축소 | 기본도: VWorld / 국토교통부 · 인터넷 연결 필요"))
+        tabs.addTab(map_page, "지도에서 좌표 확인")
+        tabs.addTab(self.candidate_table, "CAD 객체 목록")
+        layout.addWidget(tabs, 1)
         self.cad_status = QLabel("도면을 분석하면 Buffer 기준으로 사용할 모든 선 객체를 확인합니다.")
         self.cad_status.setWordWrap(True)
         layout.addWidget(self.cad_status)
@@ -267,11 +329,24 @@ class RouteGISWizard(QWizard):
 
     def _invalidate_analysis(self, *_: object) -> None:
         self.project_type = None
+        self._preview_timer.stop()
+        self._preview.clear_drawing()
+        self.service.last_coordinate_report = None
+        self.service.last_cad_lines = {}
+        self.crs_recommendations.clear()
+        self.coordinate_report.setText("도면 분석 후 실제 X/Y 범위와 도면 단위를 표시합니다.")
+        self.recommendation_status.setText("도면 또는 사업 지역이 변경되었습니다. 다시 분석해 주세요.")
+        self.preview_status.setText("도면 분석 후 붉은 선으로 표시합니다.")
         self.candidate_table.setRowCount(0)
-        self.cad_status.setText("도면이 변경되었습니다. 다시 분석해 주세요.")
+        self.cad_status.setText("도면 또는 사업 지역이 변경되었습니다. 다시 분석해 주세요.")
+
+    def initializePage(self, page_id: int) -> None:
+        super().initializePage(page_id)
+        if page_id == self._cad_page_id and self.project_type is None:
+            self._analyze()
 
     def _analyze(self):
-        self.project_type = None
+        self._invalidate_analysis()
         try:
             candidates = self.service.analyze_drawing(self._drawing_path())
         except (RouteGISError, OSError, ValueError) as exc:
@@ -301,11 +376,94 @@ class RouteGISWizard(QWizard):
             "표시된 모든 지원 선 객체를 기준으로 사업구간 주변 범위를 만듭니다."
             + warning_suffix
         )
+        report = self.service.last_coordinate_report
+        min_x, min_y, max_x, max_y = report.bounds
+        self.coordinate_report.setText(
+            f"DXF 실제 좌표: X {min_x:,.3f} ~ {max_x:,.3f} / Y {min_y:,.3f} ~ {max_y:,.3f}\n"
+            f"범위 중심: ({report.center[0]:,.3f}, {report.center[1]:,.3f}) · "
+            f"$INSUNITS={report.insunits} ({report.unit_name}) · X=동쪽, Y=북쪽으로 해석"
+        )
+        self._recommend_coordinates()
+        try:
+            self._preview.load_lines(self.service.last_cad_lines)
+            self._refresh_preview()
+        except Exception as exc:
+            self.preview_status.setText(f"도면 미리보기 실패: {exc}")
+
+    def _recommend_coordinates(self):
+        report = self.service.last_coordinate_report
+        try:
+            candidates = recommend_crs(report.bounds, self.business_region.currentText())
+        except RouteGISError as exc:
+            self.recommendation_status.setText(str(exc))
+            return
+        for index, candidate in enumerate(candidates, start=1):
+            self.crs_recommendations.addItem(f"{index}. {candidate.code} — {candidate.name}", candidate.code)
+            self.crs_recommendations.setItemData(
+                index - 1,
+                f"{candidate.reason}\n예상 중심: 경도 {candidate.longitude:.6f}, 위도 {candidate.latitude:.6f}",
+                Qt.ToolTipRole,
+            )
+        if candidates:
+            self.recommendation_status.setText(
+                f"추천 후보 {len(candidates)}개 · 시·도 대략 범위와 EPSG 사용범위 기준 (동점은 목록 순서). "
+                "첫 후보를 미리보기에 임시 적용합니다. Bessel/GRS80 등은 지도에서 비교해 선택하세요."
+            )
+            self._apply_recommendation(0)
+        else:
+            self.recommendation_status.setText(
+                "해당 지역에 맞는 후보가 없습니다. 사업 지역, 지역 원점·임의 좌표, X/Y 뒤바뀜, "
+                "경위도·mm 단위를 확인하거나 원본 좌표계를 직접 선택해 주세요."
+            )
+        if report.insunits not in (0, 6):
+            self.recommendation_status.setText(
+                self.recommendation_status.text()
+                + " 도면 단위가 미터로 기록되어 있지 않습니다. 좌표 단위를 확인하세요 (자동 배율 변환 없음)."
+            )
+
+    def _apply_recommendation(self, index: int):
+        code = self.crs_recommendations.itemData(index)
+        if code:
+            self.source_crs.setCurrentIndex(self.source_crs.findData(code))
+
+    def _schedule_preview(self, *_: object):
+        if self._preview.line_layer is not None:
+            self._preview_timer.start()
+
+    def _refresh_preview(self):
+        self._preview_timer.stop()
+        if self._preview.line_layer is None:
+            return
+        code = self._crs_code(self.source_crs)
+        self.crs_recommendations.setCurrentIndex(self.crs_recommendations.findData(code))
+        try:
+            longitude, latitude = self._preview.set_source_crs(code)
+            self.preview_status.setText(
+                f"붉은 선: DXF / {code} · 예상 중심 경도 {longitude:.6f}, 위도 {latitude:.6f}\n"
+                "도로·하천 등 기준 위치와 맞는지 확인하세요. 기본도가 보이지 않으면 인터넷 연결을 확인해 주세요."
+            )
+        except Exception as exc:
+            self.preview_status.setText(f"좌표계 미리보기 실패: {exc}")
+
+    def _dispose_preview(self, *_: object):
+        self._preview_timer.stop()
+        self._preview.close()
+        self.service.last_cad_lines = {}
+
+    def _preview_render_error(self, message, layer):
+        self.preview_status.setText(f"지도 표시 오류 ({layer.name()}): {message}")
 
     def validateCurrentPage(self) -> bool:
         if self.currentId() == self._cad_page_id and self.project_type is None:
             QMessageBox.warning(self, "도면 분석 필요", "도면 분석을 실행해 주세요.")
             return False
+        if self.currentId() == self._cad_page_id:
+            try:
+                validate_projected_metre_crs(self._crs_code(self.source_crs))
+            except RouteGISError as exc:
+                QMessageBox.warning(self, "원본 좌표계 확인", str(exc))
+                return False
+            self._refresh_preview()
         return super().validateCurrentPage()
 
     def _render_layer_list(self, checked_ids: set[str] | None = None) -> None:
@@ -611,6 +769,7 @@ class RouteGISWizard(QWizard):
             self.progress_bar.setValue(100)
             self.recent.setValue("output_directory", self.output_directory.text())
             self.recent.setValue("drawing", self.drawing.text())
+            self.recent.setValue("business_region", self.business_region.currentText())
             self.recent.remove("domain")
             self.recent.sync()
             lines = [

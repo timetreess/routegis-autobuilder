@@ -6,6 +6,12 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ## 0.2.7 - Unreleased
 
+### Added
+
+- Recommend Korean projected CRS candidates from actual DXF linework extents and the Wizard's business province/city, accepting historical and current administrative names and explaining ambiguous candidates.
+- Automatically overlay DXF linework on the same VWorld Street/Hybrid basemaps as `11_기본도` in the drawing-analysis step, with CRS switching, estimated coordinates, pan/zoom and a separate CAD inventory tab.
+- Keep preview layers in a temporary QGIS project, clear stale results when inputs change, and verify coordinate reinterpretation, raster/line rendering and cleanup in installed QGIS.
+
 ### Fixed
 
 - Import the bundled core through the plugin's own namespace so an in-session QGIS upgrade cannot combine the new Wizard with an older cached `routegis` service and fail with `build() got an unexpected keyword argument 'on_progress'`.

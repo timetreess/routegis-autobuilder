@@ -240,6 +240,8 @@ def _configure_fixture_build(wizard: Any, project_root: Path, output_root: Path,
     wizard.service.build = fixture_build
     wizard.project_name.setText("QGIS 3.34 Smoke")
     wizard.output_directory.setText(str(output_root))
+    wizard.business_region.setCurrentText("경기도")
+    wizard.preview_canvas.setRenderFlag(False)  # XYZ tiles require live networking.
     wizard.drawing.setText(str(project_root / "tests" / "fixtures" / "sample_route.dxf"))
     wizard.source_crs.setCurrentIndex(wizard.source_crs.findData("EPSG:5186"))
     wizard.output_crs.setCurrentIndex(wizard.output_crs.findData("EPSG:5186"))
@@ -249,6 +251,138 @@ def _configure_fixture_build(wizard: Any, project_root: Path, output_root: Path,
     assert wizard.candidate_table.rowCount() > 0
     wizard.vworld_api_key.setText(FAKE_VWORLD_KEY)
     wizard.data_go_kr_service_key.setText(FAKE_ECOLOGY_KEY)
+
+
+def _assert_cad_preview(wizard_module, interface, temporary_root):
+    import ezdxf
+    from time import monotonic, sleep
+    from unittest.mock import patch
+    from pyproj import Transformer
+    from qgis.PyQt.QtWidgets import QApplication
+    from qgis.core import QgsProject
+
+    x, y = Transformer.from_crs("EPSG:4326", "EPSG:5186", always_xy=True).transform(127.15, 35.82)
+    drawing = temporary_root / "preview.dxf"
+    document = ezdxf.new()
+    document.units = 6
+    document.modelspace().add_line((x - 500, y - 200), (x + 500, y + 200), dxfattribs={"layer": "ROAD"})
+    document.modelspace().add_line((x - 500, y + 200), (x + 500, y - 200), dxfattribs={"layer": "RIVER"})
+    document.saveas(drawing)
+    existing_ids = set(QgsProject.instance().mapLayers())
+    was_dirty = QgsProject.instance().isDirty()
+    wizard = wizard_module.RouteGISWizard(interface)
+    wizard.preview_canvas.setRenderFlag(False)
+    try:
+        wizard.business_region.setCurrentText("전라북도")
+        wizard.drawing.setText(str(drawing))
+        wizard.show()
+        wizard.next()  # Entering the analysis page loads recommendations AND the map.
+        QApplication.processEvents()
+        assert wizard.currentId() == wizard._cad_page_id
+        assert wizard.project_type == "non_linear"
+        assert wizard._crs_code(wizard.source_crs) == "EPSG:5186"
+        assert wizard.crs_recommendations.count() > 0
+        assert "DXF 실제 좌표" in wizard.coordinate_report.text()
+        assert "127.150000" in wizard.preview_status.text()
+        preview = wizard._preview
+        assert preview.project is not QgsProject.instance()
+        assert preview.project.layerTreeRoot().findGroup("11_기본도")
+        assert all(layer.isValid() for layers in preview._basemaps.values() for layer in layers)
+        assert "Base/service" in preview._basemaps["street"][0].source()
+        assert "Hybrid/service" in preview._basemaps["hybrid"][0].source()
+        assert "Satellite/service" in preview._basemaps["hybrid"][1].source()
+        layer = preview.line_layer
+        assert layer.featureCount() == 2
+        assert {feature["dxf_layer"] for feature in layer.getFeatures()} == {"ROAD", "RIVER"}
+        original_wkb = [bytes(feature.geometry().asWkb()) for feature in layer.getFeatures()]
+        original_center = wizard.preview_canvas.extent().center()
+        assert wizard.preview_canvas.layers() == [layer, *preview._basemaps["street"]]
+        assert not wizard.preview_canvas.extent().isEmpty()
+        _assert_preview_render(wizard, temporary_root)
+
+        wizard.source_crs.setCurrentIndex(wizard.source_crs.findData("EPSG:5174"))
+        deadline = monotonic() + 3
+        while wizard._preview_timer.isActive() and monotonic() < deadline:
+            QApplication.processEvents()
+            sleep(0.01)
+        assert not wizard._preview_timer.isActive()
+        assert layer.crs().authid() == "EPSG:5174"
+        assert wizard._crs_code(wizard.output_crs) == "EPSG:5174"
+        assert abs(wizard.preview_canvas.extent().center().y() - original_center.y()) > 90000
+        assert [bytes(feature.geometry().asWkb()) for feature in layer.getFeatures()] == original_wkb
+
+        index = wizard.crs_recommendations.findData("EPSG:5186")
+        wizard.crs_recommendations.setCurrentIndex(index)
+        wizard.crs_recommendations.activated.emit(index)
+        wizard._refresh_preview()
+        assert layer.crs().authid() == "EPSG:5186"
+        assert abs(wizard.preview_canvas.extent().center().y() - original_center.y()) < 1
+        wizard.preview_basemap.setCurrentIndex(1)
+        assert wizard.preview_canvas.layers() == [layer, *preview._basemaps["hybrid"]]
+
+        wizard.source_crs.setCurrentText("not-a-crs")
+        wizard._refresh_preview()
+        assert not wizard.preview_canvas.layers()
+        assert "실패" in wizard.preview_status.text()
+        wizard.source_crs.setCurrentIndex(wizard.source_crs.findData("EPSG:5186"))
+        wizard._refresh_preview()
+        assert wizard.preview_canvas.layers()[0] is layer
+
+        wizard.business_region.setCurrentText("전북특별자치도")
+        assert wizard.project_type is None
+        assert not wizard.preview_canvas.layers()
+        assert preview.line_layer is None
+        wizard._analyze()
+        assert len(preview.project.mapLayers()) == 4  # One drawing, three basemap rasters.
+        wizard.drawing.setText(str(temporary_root / "missing.dxf"))
+        errors = []
+        with patch.object(wizard_module.QMessageBox, "critical", lambda _, title, message: errors.append(message)):
+            wizard._analyze()
+        assert errors and wizard.project_type is None
+        assert preview.line_layer is None and not wizard.preview_canvas.layers()
+        assert wizard.crs_recommendations.count() == 0
+        assert set(QgsProject.instance().mapLayers()) == existing_ids
+        assert QgsProject.instance().isDirty() == was_dirty
+    finally:
+        wizard.close()
+        QApplication.processEvents()
+    assert not wizard._preview.project.mapLayers()
+    assert not wizard._preview_timer.isActive()
+
+
+def _assert_preview_render(wizard, temporary_root):
+    """Render the actual CAD overlay above a deterministic georeferenced raster."""
+    from osgeo import gdal, osr
+    from qgis.PyQt.QtCore import QSize
+    from qgis.core import QgsMapSettings, QgsMapRendererParallelJob, QgsRasterLayer
+
+    extent = wizard.preview_canvas.extent()
+    raster_path = temporary_root / "preview-background.tif"
+    raster = gdal.GetDriverByName("GTiff").Create(str(raster_path), 64, 64, 3, gdal.GDT_Byte)
+    raster.SetGeoTransform((extent.xMinimum(), extent.width() / 64, 0, extent.yMaximum(), 0, -extent.height() / 64))
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(3857)
+    raster.SetProjection(srs.ExportToWkt())
+    for band, value in enumerate((50, 150, 80), start=1):
+        raster.GetRasterBand(band).Fill(value)
+    raster = None
+    background = QgsRasterLayer(str(raster_path), "Offline reference map", "gdal")
+    assert background.isValid()
+    settings = QgsMapSettings(wizard.preview_canvas.mapSettings())
+    settings.setOutputSize(QSize(320, 240))
+    settings.setLayers([wizard._preview.line_layer, background])
+    job = QgsMapRendererParallelJob(settings)
+    job.start()
+    job.waitForFinished()
+    assert not job.errors()
+    image = job.renderedImage()
+    red = green = 0
+    for x in range(0, image.width(), 2):
+        for y in range(0, image.height(), 2):
+            color = image.pixelColor(x, y)
+            red += color.red() > 180 and color.green() < 90
+            green += color.green() > 120 and color.red() < 90
+    assert red > 50 and green > 1000, (red, green)
 
 
 def _wait_for_build(wizard: Any, timeout: float = 30) -> None:
@@ -866,6 +1000,7 @@ def run(project_root: Path, plugin_directory: Path, previous_plugin_directory: P
             assert wizard is not None and wizard.isVisible()
             _assert_wizard_catalog(wizard)
             _assert_wizard_crs_choices(wizard)
+            _assert_cad_preview(wizard_module, interface, temporary_root)
 
             _configure_fixture_build(wizard, project_root, temporary_root / "output")
             from inspect import signature

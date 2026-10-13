@@ -71,6 +71,7 @@ def wizard(tmp_path):
         run_button=Mock(), open_button=Mock(), progress=Mock(), recent=Mock(),
         _save_credentials=Mock(), _open_project=Mock(), service=service,
         project_type="non_linear", project_name=_field("test"),
+        business_region=SimpleNamespace(currentText=lambda: "경기도"),
         vworld_api_key=_field("entered-vworld-key"),
         data_go_kr_service_key=_field("entered-ecology-key"),
         drawing=_field("drawing.dxf"), output_directory=_field(str(tmp_path)),
@@ -83,6 +84,8 @@ def wizard(tmp_path):
         _build_task=None, _vworld_task=None, _build_timer=Mock(),
         progress_bar=Mock(), build_stage=Mock(), build_elapsed=Mock(), button=Mock(),
         _set_build_running=Mock(), _append_build_log=Mock(), _on_build_progress=Mock(),
+        _preview_timer=Mock(), _preview=Mock(), crs_recommendations=Mock(),
+        coordinate_report=Mock(), recommendation_status=Mock(), preview_status=Mock(),
     )
     wizard._finish_build = partial(_handler("_finish_build"), wizard)
     wizard._update_build_elapsed = partial(_handler("_update_build_elapsed"), wizard)
@@ -231,6 +234,10 @@ def test_changing_drawing_clears_previous_analysis(wizard):
 
     assert wizard.project_type is None
     wizard.candidate_table.setRowCount.assert_called_once_with(0)
+    wizard._preview.clear_drawing.assert_called_once()
+    wizard._preview_timer.stop.assert_called_once()
+    assert wizard.service.last_coordinate_report is None
+    assert wizard.service.last_cad_lines == {}
 
 
 def test_credentials_are_trimmed_and_blank_fields_remove_saved_values(wizard):
