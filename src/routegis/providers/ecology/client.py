@@ -621,38 +621,9 @@ class EcologyClient:
                 for feature in output_layer.features
                 if feature.geometry.intersects(aoi_geometry)
             ]
-            return DownloadResult(
-                layer_id=definition.id,
-                status="success",
-                feature_count=len(output_layer.features),
-                layer=output_layer,
-                initial_tile_count=context.initial_tile_count,
-                request_count=context.request_count,
-                successful_tile_count=context.successful_tile_count,
-                failed_tile_count=0,
-                failed_tile_bbox=None,
-            )
+            return context.success_result(output_layer)
         except CrsError as exc:
-            context.capture_failure()
-            error = ProviderError(f"Ecology 좌표계를 처리할 수 없습니다: {self._redact(str(exc))}")
-            return self._failed_result(definition, context, error)
+            error = f"Ecology 좌표계를 처리할 수 없습니다: {self._redact(str(exc))}"
+            return context.failed_result(definition.id, error)
         except ProviderError as exc:
-            context.capture_failure()
-            return self._failed_result(definition, context, exc)
-
-    def _failed_result(
-        self,
-        definition: LayerDefinition,
-        context: FetchContext,
-        error: ProviderError,
-    ) -> DownloadResult:
-        return DownloadResult(
-            layer_id=definition.id,
-            status="failed",
-            error=self._redact(str(error)),
-            initial_tile_count=context.initial_tile_count,
-            request_count=context.request_count,
-            successful_tile_count=context.successful_tile_count,
-            failed_tile_count=1,
-            failed_tile_bbox=context.failed_tile_bbox,
-        )
+            return context.failed_result(definition.id, self._redact(str(exc)))

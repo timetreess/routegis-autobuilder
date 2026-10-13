@@ -1075,26 +1075,6 @@ class OverpassClient:
                 for feature in output_layer.features
                 if feature.geometry.intersects(aoi_geometry)
             ]
-            return DownloadResult(
-                layer_id=definition.id,
-                status="success",
-                feature_count=len(output_layer.features),
-                layer=output_layer,
-                initial_tile_count=context.initial_tile_count,
-                request_count=context.request_count,
-                successful_tile_count=context.successful_tile_count,
-                failed_tile_count=0,
-                failed_tile_bbox=None,
-            )
+            return context.success_result(output_layer)
         except (CrsError, ProviderError) as exc:
-            context.capture_failure()
-            return DownloadResult(
-                layer_id=definition.id,
-                status="failed",
-                error=str(exc),
-                initial_tile_count=context.initial_tile_count,
-                request_count=context.request_count,
-                successful_tile_count=context.successful_tile_count,
-                failed_tile_count=1,
-                failed_tile_bbox=context.failed_tile_bbox,
-            )
+            return context.failed_result(definition.id, str(exc))

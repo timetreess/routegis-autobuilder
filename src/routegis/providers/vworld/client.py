@@ -753,29 +753,9 @@ class VWorldClient:
             output_layer.features = [
                 feature for feature in output_layer.features if feature.geometry.intersects(aoi_geometry)
             ]
-            return DownloadResult(
-                layer_id=definition.id,
-                status="success",
-                feature_count=len(output_layer.features),
-                layer=output_layer,
-                initial_tile_count=context.initial_tile_count,
-                request_count=context.request_count,
-                successful_tile_count=context.successful_tile_count,
-                failed_tile_count=0,
-                failed_tile_bbox=None,
-            )
+            return context.success_result(output_layer)
         except (ProviderError, CrsError) as exc:
-            context.capture_failure()
-            return DownloadResult(
-                layer_id=definition.id,
-                status="failed",
-                error=self._redact(str(exc)),
-                initial_tile_count=context.initial_tile_count,
-                request_count=context.request_count,
-                successful_tile_count=context.successful_tile_count,
-                failed_tile_count=1,
-                failed_tile_bbox=context.failed_tile_bbox,
-            )
+            return context.failed_result(definition.id, self._redact(str(exc)))
 
     def fetch_many(self, definitions: list[LayerDefinition], aoi: SpatialLayer) -> list[DownloadResult]:
         results: list[DownloadResult] = []
