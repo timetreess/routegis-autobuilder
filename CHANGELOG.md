@@ -4,6 +4,16 @@ All notable changes to RouteGIS AutoBuilder are documented here. This project fo
 
 The public repository starts with version 0.2.3. Earlier entries describe the application's development history.
 
+## [0.2.8] - 2026-10-13
+
+### Changed
+
+- Remove river centerline from the shared CLI/Wizard default profile, leaving six default layers; it remains available for manual selection.
+- Reuse successful power-query tile responses once for the following companion layer (lines or towers/poles), reducing default OSM downloads from four HTTP requests to two per tile when responses fit the cache budget and no retries are needed.
+- Bound the retained response set by the existing response-size limit, discard it on failure or close, and count only actual HTTP transmissions in download statistics.
+- Separate river-area and river-centerline queries so each downloads only the requested dataset; preserve the existing 180-second timeout, three-attempt ceiling and server failover policy.
+- Verify optional selection and reduced request counts through installed-QGIS widgets, plus multi-tile reuse, retry accounting, cache bounds and failed-response isolation in provider tests.
+
 ## [0.2.7] - 2026-10-13
 
 ### Added
@@ -100,5 +110,6 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 - Initial DXF-to-QGIS project pipeline, CLI and QGIS wizard.
 
+[0.2.8]: https://github.com/timetreess/routegis-autobuilder/releases/tag/v0.2.8
 [0.2.7]: https://github.com/timetreess/routegis-autobuilder/releases/tag/v0.2.7
 [0.2.3]: https://github.com/timetreess/routegis-autobuilder/releases/tag/v0.2.3
