@@ -7,6 +7,7 @@ from pathlib import Path
 import ezdxf
 from ezdxf.entities import DXFGraphic
 from ezdxf.path import make_path
+from ezdxf.units import unit_name
 from shapely.geometry import LineString
 
 from ..errors import CadReadError
@@ -31,6 +32,18 @@ class SkippedCadEntity:
     handle: str
     layer: str
     reason: str
+
+
+@dataclass(frozen=True)
+class DxfCoordinateReport:
+    bounds: tuple[float, float, float, float]
+    insunits: int
+    unit_name: str
+
+    @property
+    def center(self) -> tuple[float, float]:
+        min_x, min_y, max_x, max_y = self.bounds
+        return ((min_x + max_x) / 2, (min_y + max_y) / 2)
 
 
 class _DegenerateEntityError(CadReadError):
@@ -105,6 +118,21 @@ class DxfReader:
             name: [line for _entity_type, line in entries]
             for name, entries in self._scan().items()
         }
+
+    def coordinate_report(self) -> DxfCoordinateReport | None:
+        """Measure supported model-space linework, not the often stale DXF header extent."""
+        bounds = [line.bounds for entries in self._scan().values() for _, line in entries]
+        if not bounds:
+            return None
+        units = int(self.document.header.get("$INSUNITS", 0))
+        return DxfCoordinateReport(
+            bounds=(
+                min(item[0] for item in bounds), min(item[1] for item in bounds),
+                max(item[2] for item in bounds), max(item[3] for item in bounds),
+            ),
+            insunits=units,
+            unit_name=unit_name(units),
+        )
 
     def inventory(self, snap_tolerance: float = 0.1) -> list[LayerInventory]:
         inventory: list[LayerInventory] = []

@@ -14,8 +14,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from shapely.geometry import LineString
+
 from ..cad.converter import DwgConverter
-from ..cad.reader import DxfReader
+from ..cad.reader import DxfCoordinateReport, DxfReader
 from ..config import AppSettings, load_settings, safe_project_name, validate_project_config
 from ..errors import (
     CadReadError,
@@ -321,9 +323,13 @@ class ProjectService:
         self.settings = settings or load_settings()
         self.catalog: LayerCatalog = LayerCatalog()
         self.last_cad_warnings: tuple[ValidationIssue, ...] = ()
+        self.last_coordinate_report: DxfCoordinateReport | None = None
+        self.last_cad_lines: dict[str, list[LineString]] = {}
 
     def analyze_drawing(self, drawing: Path, *, chord_tolerance: float | None = None) -> list[dict[str, Any]]:
         self.last_cad_warnings = ()
+        self.last_coordinate_report = None
+        self.last_cad_lines = {}
         reader = DxfReader(
             drawing,
             self.settings.chord_tolerance
@@ -336,6 +342,8 @@ class ProjectService:
         self.last_cad_warnings = tuple(_cad_skip_issues(reader))
         if not inventory and reader.skipped_entities:
             raise CadReadError("도면의 지원 선 객체가 모두 길이 0이라 분석할 수 없습니다.")
+        self.last_coordinate_report = reader.coordinate_report()
+        self.last_cad_lines = reader.lines_by_layer()
         return [asdict(item) for item in rank_candidates(inventory)]
 
     def create_preview_shapefiles(
