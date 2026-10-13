@@ -15,6 +15,7 @@ from shapely.geometry import LineString, MultiLineString, MultiPoint, MultiPolyg
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
+from ... import __version__
 from ...errors import CrsError, ProviderError
 from ...gis import AoiTilePlanner, compute_request_budget
 from ...gis.crs import normalize_crs, transform_layer
@@ -27,7 +28,7 @@ FALLBACK_OVERPASS_ENDPOINTS = (
     "https://overpass.private.coffee/api/interpreter",
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 )
-OVERPASS_USER_AGENT = "RouteGIS-AutoBuilder/0.2.6"
+OVERPASS_USER_AGENT = f"RouteGIS-AutoBuilder/{__version__}"
 TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_RETRIES = 2
 MAX_RING_SEARCH_STATES = 50_000

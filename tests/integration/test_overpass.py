@@ -9,6 +9,7 @@ import httpx
 import pytest
 from shapely.geometry import box
 
+from routegis import __version__
 from routegis.gis import AoiTilePlanner, transform_geometry
 from routegis.models import LayerDefinition, SpatialFeature, SpatialLayer
 from routegis.providers.catalog import LayerCatalog
@@ -134,7 +135,7 @@ def test_exact_post_query_bbox_order_and_configurable_endpoint(
     request = requests[0]
     assert request.method == "POST"
     assert str(request.url) == endpoint
-    assert request.headers["User-Agent"] == "RouteGIS-AutoBuilder/0.2.6"
+    assert request.headers["User-Agent"] == f"RouteGIS-AutoBuilder/{__version__}"
     expected = expected_template.format(bbox=_bbox_text(_one_tile_bounds(aoi)))
     assert _normalized_query(request) == expected
 

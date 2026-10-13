@@ -4,7 +4,7 @@ All notable changes to RouteGIS AutoBuilder are documented here. This project fo
 
 The public repository starts with version 0.2.3. Earlier entries describe the application's development history.
 
-## 0.2.7 - Unreleased
+## [0.2.7] - 2026-10-13
 
 ### Added
 
@@ -12,8 +12,15 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 - Automatically overlay DXF linework on the same VWorld Street/Hybrid basemaps as `11_기본도` in the drawing-analysis step, with CRS switching, estimated coordinates, pan/zoom and a separate CAD inventory tab.
 - Keep preview layers in a temporary QGIS project, clear stale results when inputs change, and verify coordinate reinterpretation, raster/line rendering and cleanup in installed QGIS.
 
+### Changed
+
+- Centralize response-size limits, request budgets, tile tracking and download-result statistics shared by VWorld, Ecology and Overpass while preserving provider-specific parsing and errors.
+- Replace Wizard source-shape assertions with behavior checks, including selection edits during live catalog loading.
+
 ### Fixed
 
+- Preserve the latest layer selections when a background VWorld catalog refresh finishes instead of restoring the selections captured before the request.
+- Derive the Overpass User-Agent from the bundled core version so requests identify the installed release correctly.
 - Enable on-the-fly reprojection in background-generated QGIS projects so QGIS retains the project CRS and layer CRS changes move linework correctly on the map.
 - Import the bundled core through the plugin's own namespace so an in-session QGIS upgrade cannot combine the new Wizard with an older cached `routegis` service and fail with `build() got an unexpected keyword argument 'on_progress'`.
 - Exercise the real build task with an incompatible global core already loaded, and check the actual project-generation button after upgrades and plugin reloads in installed QGIS.
@@ -93,4 +100,5 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 - Initial DXF-to-QGIS project pipeline, CLI and QGIS wizard.
 
+[0.2.7]: https://github.com/timetreess/routegis-autobuilder/releases/tag/v0.2.7
 [0.2.3]: https://github.com/timetreess/routegis-autobuilder/releases/tag/v0.2.3
