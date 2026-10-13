@@ -51,7 +51,7 @@ jobs:
             --project-name release-smoke --project-type non_linear \
             --source-crs EPSG:5186 --output-crs EPSG:5186 --buffer 1000 \
             --output build/wheel-smoke-output --fixture tests/fixtures/spatial_mock.json
-          jq -e '.status == "COMPLETED" and (.layers | length == 7) and all(.layers[]; .status == "success")' \
+          jq -e '.status == "COMPLETED" and (.layers | map(.id)) == ["ecology_nature", "land_ownership", "heritage_protection", "power_line", "power_support", "river_area"] and all(.layers[]; .status == "success")' \
             build/wheel-smoke-output/release-smoke/project_manifest.json
           test -s build/wheel-smoke-output/release-smoke/release-smoke.qgz
           test -s build/wheel-smoke-output/release-smoke/data/project.gpkg

@@ -20,7 +20,6 @@ DEFAULT_LAYER_IDS = (
     "heritage_protection",
     "power_line",
     "power_support",
-    "river_centerline",
     "river_area",
 )
 EXPECTED_GROUPS = (
@@ -164,6 +163,9 @@ def _assert_wizard_catalog(wizard: Any) -> None:
     legacy_ids = catalog_ids - set(DEFAULT_LAYER_IDS)
     assert legacy_ids
     assert all(_item_by_id(wizard, layer_id).checkState() == Qt.Unchecked for layer_id in legacy_ids)
+    _item_by_id(wizard, "river_centerline").setCheckState(Qt.Checked)
+    assert _checked_ids(wizard) == (*DEFAULT_LAYER_IDS, "river_centerline")
+    _item_by_id(wizard, "river_centerline").setCheckState(Qt.Unchecked)
     for layer_id in DEFAULT_LAYER_IDS:
         tooltip = _item_by_id(wizard, layer_id).toolTip()
         assert "공급원:" in tooltip
@@ -558,7 +560,6 @@ def _assert_native_styles(project: Any) -> None:
         "river_area": ((66, 165, 245, 70), (25, 118, 210, 255), 0.8),
     }
     line_styles = {
-        "river_centerline": ((25, 118, 210, 255), 1.2),
         "power_line": ((141, 74, 45, 255), 1.2),
     }
     marker_styles = {"power_support": ((141, 74, 45, 255), 2.5)}
@@ -812,6 +813,9 @@ def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project
             assert len(wizard.result.downloads) == len(DEFAULT_LAYER_IDS)
             assert all(result.status == expected_status for result in wizard.result.downloads)
             assert {request.url.host for request in requests} == {"api.vworld.kr", "apis.data.go.kr", "overpass-api.de"}
+            osm_requests = [request for request in requests if request.url.host == "overpass-api.de"]
+            assert len(osm_requests) == (3 if failure else 2)
+            assert all(b'way["waterway"~' not in request.content for request in osm_requests)
             text = wizard.progress.toPlainText()
             if failure:
                 for detail in ("INVALID_KEY", "HTTP 403", "SERVICE_KEY_IS_NOT_REGISTERED_ERROR", "인증서", "모두 실패"):

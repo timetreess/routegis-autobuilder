@@ -37,7 +37,6 @@ MAX_SOURCE_CANONICAL_DEPTH = 128
 MAX_SOURCE_CANONICAL_ITEMS = 1_000_000
 
 _POWER_LAYER_IDS = frozenset({"power_line", "power_support"})
-_RIVER_LAYER_IDS = frozenset({"river_centerline", "river_area"})
 _GEOMETRY_TYPES = {
     "power_line": "MultiLineString",
     "power_support": "MultiPoint",
@@ -113,6 +112,7 @@ class OverpassClient:
         self._max_split_depth = int(max_split_depth)
         self._minimum_tile_size_m = float(minimum_tile_size_m)
         self._max_response_bytes = int(max_response_bytes)
+        self._power_response_cache: tuple[str, dict[str, bytes]] | None = None
         self._sleep = sleep
         self._owns_client = client is None
         self._client = client or httpx.Client(
@@ -148,6 +148,7 @@ class OverpassClient:
         return endpoint
 
     def close(self) -> None:
+        self._power_response_cache = None
         if self._owns_client:
             self._client.close()
 
@@ -181,11 +182,16 @@ class OverpassClient:
                 ");\n"
                 "out body geom;"
             )
-        if definition.id in _RIVER_LAYER_IDS:
+        if definition.id == "river_centerline":
+            return (
+                "[out:json][timeout:180];\n"
+                f'way["waterway"~"^(river|stream)$"]({bbox});\n'
+                "out body geom;"
+            )
+        if definition.id == "river_area":
             return (
                 "[out:json][timeout:180];\n"
                 "(\n"
-                f'  way["waterway"~"^(river|stream)$"]({bbox});\n'
                 f'  way["natural"="water"]["water"="river"]({bbox});\n'
                 f'  relation["natural"="water"]["water"="river"]({bbox});\n'
                 f'  way["waterway"="riverbank"]({bbox});\n'
@@ -991,6 +997,19 @@ class OverpassClient:
         aoi: SpatialLayer,
     ) -> DownloadResult:
         context = FetchContext("Overpass")
+        # A successful power download can serve its companion layer once. A
+        # repeated layer or intervening query starts fresh, as does each build.
+        cached_layer_id, cached_responses = self._power_response_cache or ("", {})
+        self._power_response_cache = None
+        reuse_power = (
+            definition.id in _POWER_LAYER_IDS
+            and cached_layer_id in _POWER_LAYER_IDS
+            and cached_layer_id != definition.id
+        )
+        if not reuse_power:
+            cached_responses = {}
+        power_responses: dict[str, bytes] = {}
+        cache_size = 0
         try:
             self._validate_definition(definition)
             planner = AoiTilePlanner(
@@ -1019,9 +1038,11 @@ class OverpassClient:
             relation_member_way_ids: set[str] = set()
             for tile in initial_tiles:
                 context.activate(tile)
-                payload = self._payload(
-                    self._response_bytes(self._query(definition, tile.request_bounds), context)
-                )
+                query = self._query(definition, tile.request_bounds)
+                content = cached_responses.pop(query, None)
+                if content is None:
+                    content = self._response_bytes(query, context)
+                payload = self._payload(content)
                 for identity, fingerprint in self._source_object_fingerprints(payload):
                     previous = source_origins.get(identity)
                     if previous is not None and previous[0] != fingerprint:
@@ -1043,6 +1064,14 @@ class OverpassClient:
                     candidates_by_id.setdefault(candidate.identity, candidate)
                 relation_member_way_ids.update(tile_member_ids)
                 context.finish_tile()
+                # Bound the entire retained response set, not just each tile.
+                if (
+                    definition.id in _POWER_LAYER_IDS
+                    and not reuse_power
+                    and cache_size + len(content) <= self._max_response_bytes
+                ):
+                    power_responses[query] = content
+                    cache_size += len(content)
 
             stable_candidates = [
                 candidate
@@ -1076,6 +1105,9 @@ class OverpassClient:
                 for feature in output_layer.features
                 if feature.geometry.intersects(aoi_geometry)
             ]
+            # Publish only after all tiles, parsing and reprojection succeeded.
+            if power_responses:
+                self._power_response_cache = (definition.id, power_responses)
             return context.success_result(output_layer)
         except (CrsError, ProviderError) as exc:
             return context.failed_result(definition.id, str(exc))

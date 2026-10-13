@@ -88,18 +88,12 @@ def _one_tile_bounds(aoi: SpatialLayer) -> tuple[float, float, float, float]:
         ),
         (
             "river_centerline",
-            '[out:json][timeout:180]; ( '
-            'way["waterway"~"^(river|stream)$"]({bbox}); '
-            'way["natural"="water"]["water"="river"]({bbox}); '
-            'relation["natural"="water"]["water"="river"]({bbox}); '
-            'way["waterway"="riverbank"]({bbox}); '
-            'relation["waterway"="riverbank"]({bbox}); '
-            '); out body geom;',
+            '[out:json][timeout:180]; '
+            'way["waterway"~"^(river|stream)$"]({bbox}); out body geom;',
         ),
         (
             "river_area",
             '[out:json][timeout:180]; ( '
-            'way["waterway"~"^(river|stream)$"]({bbox}); '
             'way["natural"="water"]["water"="river"]({bbox}); '
             'relation["natural"="water"]["water"="river"]({bbox}); '
             'way["waterway"="riverbank"]({bbox}); '
@@ -1101,7 +1095,7 @@ def test_default_server_outage_recovers_power_features_from_public_mirror(
     assert result.failed_tile_bbox is None
 
 
-def test_recovered_mirror_is_reused_for_the_next_power_layer():
+def test_recovered_response_is_shared_and_mirror_is_reused_for_the_next_query():
     urls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1114,15 +1108,148 @@ def test_recovered_mirror_is_reused_for_the_next_power_layer():
         client = OverpassClient(backoff=0, client=http_client)
         line = client.fetch_layer(_definition("power_line"), _aoi())
         support = client.fetch_layer(_definition("power_support"), _aoi())
+        river = client.fetch_layer(_definition("river_area"), _aoi())
 
-    assert line.status == support.status == "success"
+    assert line.status == support.status == river.status == "success"
     assert line.request_count == 2
-    assert support.request_count == 1
+    assert support.request_count == 0
+    assert river.request_count == 1
     assert urls == [
         DEFAULT_OVERPASS_ENDPOINT,
         "https://overpass.private.coffee/api/interpreter",
         "https://overpass.private.coffee/api/interpreter",
     ]
+
+
+@pytest.mark.parametrize("layer_ids", [("power_line", "power_support"), ("power_support", "power_line")])
+@pytest.mark.parametrize("tile_size_m", [25_000, 2_500])
+def test_power_layers_share_successful_tile_responses(layer_ids, tile_size_m):
+    requests = []
+    aoi = _aoi()
+    tiles = AoiTilePlanner(aoi, "EPSG:4326", tile_size_m, 32, 50).initial_tiles()
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=_fixture("overpass_power.json"))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        client = OverpassClient(retries=0, tile_size_m=tile_size_m, client=transport)
+        first, second = [client.fetch_layer(_definition(layer_id), aoi) for layer_id in layer_ids]
+
+    assert first.status == second.status == "success"
+    assert len(requests) == first.request_count == len(tiles)
+    assert second.request_count == 0
+    assert first.successful_tile_count == second.successful_tile_count == len(tiles)
+    for result in (first, second):
+        expected_ids = ["way/100"] if result.layer_id == "power_line" else ["node/1", "node/2"]
+        assert result.layer is not None
+        assert [feature.feature_id for feature in result.layer.features] == expected_ids
+        assert result.feature_count == len(expected_ids)
+        assert result.failed_tile_count == 0 and result.failed_tile_bbox is None
+
+
+@pytest.mark.parametrize("layer_ids", [
+    ("power_line", "power_support", "power_line"),
+    ("power_line", "power_line", "power_support"),
+])
+def test_power_response_reuse_is_single_use_and_same_layer_refreshes(layer_ids):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=_fixture("overpass_power.json"))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        client = OverpassClient(retries=0, client=transport)
+        results = [client.fetch_layer(_definition(layer_id), _aoi()) for layer_id in layer_ids]
+
+    assert all(result.status == "success" for result in results)
+    assert len(requests) == sum(result.request_count for result in results) == 2
+
+
+def test_power_response_reuse_requires_the_same_query_bounds():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=_fixture("overpass_power.json"))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        client = OverpassClient(retries=0, client=transport)
+        line = client.fetch_layer(_definition("power_line"), _aoi())
+        support = client.fetch_layer(_definition("power_support"), _aoi((126.98, 37.49, 127.04, 37.54)))
+
+    assert line.status == support.status == "success"
+    assert line.request_count == support.request_count == 1
+    assert len(requests) == 2 and requests[0].content != requests[1].content
+
+
+@pytest.mark.parametrize("failure", [
+    httpx.Response(504),
+    httpx.Response(200, json={"remark": "runtime error", "elements": []}),
+    httpx.Response(200, json={"elements": [None]}),
+])
+def test_failed_power_response_is_not_reused(failure):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return deepcopy(failure) if len(requests) == 1 else httpx.Response(200, json=_fixture("overpass_power.json"))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        client = OverpassClient(retries=0, client=transport)
+        line = client.fetch_layer(_definition("power_line"), _aoi())
+        support = client.fetch_layer(_definition("power_support"), _aoi())
+
+    assert line.status == "failed" and support.status == "success"
+    assert support.feature_count == 2
+    assert line.request_count == support.request_count == 1
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize("close_between_layers", [False, True])
+def test_power_cache_is_byte_bounded_and_cleared_on_close(close_between_layers):
+    content = b'{"version":0.6,"elements":[]}'
+    aoi = _output_aoi((200_000, 540_000, 200_200, 540_040))
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, content=content)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        client = OverpassClient(retries=0, tile_size_m=100, max_response_bytes=len(content), client=transport)
+        line = client.fetch_layer(_definition("power_line"), aoi)
+        if close_between_layers:
+            client.close()
+        support = client.fetch_layer(_definition("power_support"), aoi)
+
+    assert line.status == support.status == "success"
+    assert line.initial_tile_count == support.successful_tile_count == 2
+    assert line.request_count == 2
+    assert support.request_count == (2 if close_between_layers else 1)
+    assert len(requests) == line.request_count + support.request_count
+
+
+def test_partially_failed_power_layer_does_not_publish_cached_tiles():
+    requests = []
+    aoi = _output_aoi((200_000, 540_000, 200_200, 540_040))
+
+    def handler(request):
+        requests.append(request)
+        if len(requests) == 2:
+            return httpx.Response(504)
+        return httpx.Response(200, json={"elements": []})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        client = OverpassClient(retries=0, tile_size_m=100, client=transport)
+        line = client.fetch_layer(_definition("power_line"), aoi)
+        support = client.fetch_layer(_definition("power_support"), aoi)
+
+    assert line.status == "failed" and line.layer is None
+    assert support.status == "success"
+    assert line.request_count == support.request_count == 2
+    assert len(requests) == 4
 
 
 def test_temporary_mirror_error_uses_second_public_mirror_within_retry_limit():

@@ -17,7 +17,7 @@ The workflow requires all of the following to succeed:
 2. Plugin version consistency and vendored dependency closure checks.
 3. Bandit, detect-secrets and pip-audit checks on the packaged plugin.
 4. Python wheel and source distribution builds, including strict Twine metadata validation.
-5. Installation of the built wheel in a clean environment and an offline CLI build with all seven default layers, QGZ, GeoPackage and Shapefile output.
+5. Installation of the built wheel in a clean environment and an offline CLI build with all six default layers, QGZ, GeoPackage and Shapefile output.
 6. Generation and verification of SHA-256 checksums for every release asset.
 
 The release preparation job reuses the exact plugin ZIP that passed the security checks. A manual run leaves **Publish tagged release** skipped and uploads `release-artifacts` for download from the Actions run.

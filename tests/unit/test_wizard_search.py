@@ -28,7 +28,6 @@ DEFAULT_LAYER_IDS = (
     "heritage_protection",
     "power_line",
     "power_support",
-    "river_centerline",
     "river_area",
 )
 LEGACY_LAYER_IDS = {
@@ -39,6 +38,7 @@ LEGACY_LAYER_IDS = {
     "landuse_zone",
     "road",
     "building",
+    "river_centerline",
 }
 
 
@@ -290,7 +290,7 @@ def test_discovered_vworld_layers_have_complete_source_metadata():
     )
 
 
-def test_basic_route_contains_exactly_the_seven_approved_layers_in_order():
+def test_basic_route_contains_six_layers_without_optional_river_centerline():
     assert load_profile() == DEFAULT_LAYER_IDS
 
 
