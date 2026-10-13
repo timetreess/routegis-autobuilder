@@ -15,6 +15,7 @@ from routegis.environment import load_data_go_kr_service_key, load_vworld_api_ke
 from routegis.errors import RouteGISError
 from routegis.models import DownloadResult, PipelineResult, PipelineState, ProjectConfig
 from routegis.providers.catalog import LayerCatalog
+from routegis.providers.vworld.client import VWorldClient
 from routegis.security import redact_sensitive_text
 
 
@@ -32,7 +33,8 @@ def _handler(name, **globals):
     source = Path(__file__).resolve().parents[2] / "plugin" / "wizard.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     wizard = next(node for node in tree.body if isinstance(node, ast.ClassDef))
-    method = next(node for node in wizard.body if getattr(node, "name", "") == name)
+    method = next(node for node in wizard.body if isinstance(node, ast.FunctionDef) and node.name == name)
+    method.decorator_list = []
     module = ast.Module(body=[method], type_ignores=[])
     namespace = {
         "ProjectConfig": ProjectConfig,
@@ -166,6 +168,8 @@ def test_build_does_not_execute_pipeline_on_the_ui_thread(wizard, tmp_path):
 
     wizard.service.build.assert_not_called()
     assert wizard._build_task is not None
+    assert wizard._build_task.config.project_type == "non_linear"
+    assert wizard._build_task.config.source_layers == ()
 
 
 def test_live_progress_updates_stage_and_appends_instead_of_replacing_log(wizard, tmp_path):
@@ -210,3 +214,63 @@ def test_elapsed_time_indicates_waiting_without_inventing_percentage(wizard, tmp
     text = wizard.build_elapsed.setText.call_args.args[0]
     assert "40초 전" in text and "기다리고" in text
     wizard.progress_bar.setValue.assert_called_once_with(0)
+
+
+def test_blank_output_directory_is_rejected(wizard):
+    wizard.output_directory = _field("   ")
+
+    with pytest.raises(RouteGISError, match="저장 위치"):
+        _handler("_output_directory", Path=Path)(wizard)
+
+
+def test_changing_drawing_clears_previous_analysis(wizard):
+    wizard.candidate_table = Mock()
+    wizard.cad_status = Mock()
+
+    _handler("_invalidate_analysis")(wizard)
+
+    assert wizard.project_type is None
+    wizard.candidate_table.setRowCount.assert_called_once_with(0)
+
+
+def test_credentials_are_trimmed_and_blank_fields_remove_saved_values(wizard):
+    stored = {}
+    wizard.recent = SimpleNamespace(
+        setValue=stored.__setitem__, remove=lambda key: stored.pop(key, None), sync=Mock(),
+    )
+    wizard.vworld_api_key = _field(" entered-vworld-key ")
+    save = _handler("_save_credentials")
+
+    save(wizard)
+    assert stored == {
+        "vworld_api_key": "entered-vworld-key",
+        "data_go_kr_service_key": "entered-ecology-key",
+    }
+
+    wizard.vworld_api_key = _field(" ")
+    wizard.data_go_kr_service_key = _field("")
+    save(wizard)
+    assert stored == {}
+    assert wizard.recent.sync.call_count == 2
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_catalog_worker_closes_client_and_redacts_failure(wizard, failure):
+    client = Mock(spec=VWorldClient)
+    definitions = wizard.service.catalog.all()
+    client.discover_layers.return_value = definitions
+    if failure:
+        client.discover_layers.side_effect = RuntimeError("catalog unavailable entered-vworld-key")
+    service = SimpleNamespace(_provider=Mock(return_value=client))
+    task = SimpleNamespace(isCanceled=lambda: False)
+
+    result = _handler(
+        "_discover_vworld_catalog", ProjectService=lambda _: service, VWorldClient=VWorldClient,
+    )(task, wizard.settings, "entered-vworld-key")
+
+    client.close.assert_called_once()
+    if failure:
+        assert "catalog unavailable" in result["error"]
+        assert "entered-vworld-key" not in result["error"]
+    else:
+        assert result["definitions"] == definitions

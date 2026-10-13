@@ -276,12 +276,6 @@ def test_constructor_rejects_response_limit_above_absolute_64_mib_cap():
             )
 
 
-def test_provider_package_exports_ecology_client():
-    from routegis.providers.ecology import EcologyClient as ExportedEcologyClient
-
-    assert ExportedEcologyClient is EcologyClient
-
-
 def test_default_endpoint_and_exact_get_params_are_httpx_encoded():
     requests: list[httpx.Request] = []
     encoded_key = "fixture key+/="

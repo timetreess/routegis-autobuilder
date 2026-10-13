@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, asdict
-from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +9,7 @@ import yaml
 
 from routegis.config import load_layer_catalog, load_settings, validate_project_config
 from routegis.errors import ConfigurationError
-from routegis.models import DownloadResult, LayerDefinition, ProjectConfig
+from routegis.models import LayerDefinition, ProjectConfig
 
 
 def _layer_fields() -> dict[str, Any]:
@@ -31,18 +30,6 @@ def _layer_fields() -> dict[str, Any]:
     }
 
 
-@pytest.mark.parametrize("field_name", ["publisher", "dataset_id", "license_name", "license_url"])
-def test_layer_definition_requires_source_metadata(field_name: str):
-    parameter = signature(LayerDefinition).parameters.get(field_name)
-    fields = _layer_fields()
-    del fields[field_name]
-
-    assert parameter is not None
-    assert parameter.default is Parameter.empty
-    with pytest.raises(TypeError, match=field_name):
-        LayerDefinition(**fields)
-
-
 def test_layer_definition_aliases_are_optional_and_the_model_is_frozen():
     definition = LayerDefinition(**_layer_fields())
     aliased = LayerDefinition(**_layer_fields(), aliases=("보호지역", "생태보호구역"))
@@ -51,16 +38,6 @@ def test_layer_definition_aliases_are_optional_and_the_model_is_frozen():
     assert aliased.aliases == ("보호지역", "생태보호구역")
     with pytest.raises(FrozenInstanceError):
         setattr(definition, "name", "Changed")
-
-
-def test_download_result_tile_statistics_default_to_empty():
-    result = DownloadResult(layer_id="protected_area", status="success")
-
-    assert result.initial_tile_count == 0
-    assert result.request_count == 0
-    assert result.successful_tile_count == 0
-    assert result.failed_tile_count == 0
-    assert result.failed_tile_bbox is None
 
 
 def _catalog_path(

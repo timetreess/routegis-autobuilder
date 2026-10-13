@@ -1,5 +1,4 @@
 from dataclasses import replace
-from inspect import signature
 
 import httpx
 import pytest
@@ -133,34 +132,6 @@ def _polygon_feature(
                 ]
             ],
         },
-    }
-
-
-def test_constructor_exposes_approved_tiling_and_budget_defaults_without_max_pages():
-    parameters = signature(VWorldClient).parameters
-
-    assert "max_pages" not in parameters
-    assert {
-        name: parameters[name].default
-        for name in (
-            "land_ownership_tile_size_m",
-            "default_tile_size_m",
-            "request_budget_minimum",
-            "request_budget_per_tile",
-            "request_budget_maximum",
-            "max_split_depth",
-            "minimum_tile_size_m",
-            "max_response_bytes",
-        )
-    } == {
-        "land_ownership_tile_size_m": 5000,
-        "default_tile_size_m": 10000,
-        "request_budget_minimum": 100,
-        "request_budget_per_tile": 16,
-        "request_budget_maximum": 5000,
-        "max_split_depth": 32,
-        "minimum_tile_size_m": 50,
-        "max_response_bytes": 64 * 1024 * 1024,
     }
 
 

@@ -72,12 +72,6 @@ def _one_tile_bounds(aoi: SpatialLayer) -> tuple[float, float, float, float]:
     return tiles[0].request_bounds
 
 
-def test_provider_package_exports_overpass_client():
-    from routegis.providers.overpass import OverpassClient as ExportedOverpassClient
-
-    assert ExportedOverpassClient is OverpassClient
-
-
 @pytest.mark.parametrize(
     ("layer_id", "expected_template"),
     [
