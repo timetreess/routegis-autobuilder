@@ -145,6 +145,9 @@ def _checked_ids(wizard: Any) -> tuple[str, ...]:
 
 
 def _assert_wizard_catalog(wizard: Any) -> None:
+    from unittest.mock import patch
+    from qgis.core import QgsApplication
+
     LayerDefinition = _core_module("models").LayerDefinition
 
     Qt = getattr(importlib.import_module("qgis.PyQt.QtCore"), "Qt")
@@ -188,10 +191,23 @@ def _assert_wizard_catalog(wizard: Any) -> None:
         license_name="VWorld OpenAPI 이용조건",
         license_url="https://www.vworld.kr/dev/v4dv_wmsguide2_s001.do",
     )
-    wizard._vworld_checked_ids = set(_checked_ids(wizard))
-    wizard._finish_vworld_catalog(None, {"definitions": [live_definition]})
-    assert _checked_ids(wizard) == DEFAULT_LAYER_IDS
+    wizard.vworld_api_key.setText(FAKE_VWORLD_KEY)
+    # Hold the task in the queue while the user edits the still-enabled list.
+    with patch.object(QgsApplication, "taskManager") as task_manager:
+        wizard.load_vworld_button.click()
+        task_manager.return_value.addTask.assert_called_once()
+        assert wizard.layer_list.isEnabled()
+        assert not wizard.load_vworld_button.isEnabled()
+        _item_by_id(wizard, "heritage_protection").setCheckState(Qt.Unchecked)
+        _item_by_id(wizard, "power_line").setCheckState(Qt.Unchecked)
+        _item_by_id(wizard, "cadastral").setCheckState(Qt.Checked)
+        selected = _checked_ids(wizard)
+        wizard._finish_vworld_catalog(None, {"definitions": [live_definition]})
+    assert _checked_ids(wizard) == selected
+    assert f"선택 {len(selected)}개" in wizard.layer_status.text()
+    assert wizard.load_vworld_button.isEnabled()
     assert _item_by_id(wizard, live_definition.id).checkState() == Qt.Unchecked
+    wizard._render_layer_list(set(DEFAULT_LAYER_IDS))
     wizard.layer_search.clear()
 
 

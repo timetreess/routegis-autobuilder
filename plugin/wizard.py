@@ -58,7 +58,6 @@ class RouteGISWizard(QWizard):
         self.result = None
         self.project_type = None
         self._vworld_task = None
-        self._vworld_checked_ids: set[str] = set()
         self._vworld_cursor_active = False
         self._build_task = None
         self._build_started = 0.0
@@ -549,16 +548,16 @@ class RouteGISWizard(QWizard):
                 return
 
             definitions = result.get("definitions") or []
+            checked_ids = set(self._selected_layers())
             added = self.service.catalog.merge_live(definitions)
-            self._render_layer_list(self._vworld_checked_ids)
+            self._render_layer_list(checked_ids)
             total = len(self.service.catalog.all())
             self.layer_status.setText(
                 f"브이월드 목록 {total}개 · 신규 {added}개 · "
-                f"선택 {len(self._vworld_checked_ids)}개"
+                f"선택 {len(checked_ids)}개"
             )
         finally:
             self._vworld_task = None
-            self._vworld_checked_ids = set()
             if self._vworld_cursor_active:
                 QApplication.restoreOverrideCursor()
                 self._vworld_cursor_active = False
@@ -573,7 +572,6 @@ class RouteGISWizard(QWizard):
             QMessageBox.warning(self, "브이월드 목록 불러오기", message)
             return
 
-        self._vworld_checked_ids = set(self._selected_layers())
         self.load_vworld_button.setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self._vworld_cursor_active = True
@@ -593,7 +591,6 @@ class RouteGISWizard(QWizard):
             self.layer_status.setText(f"목록 유지 · 불러오기 실패: {safe_error}")
             QMessageBox.warning(self, "브이월드 목록 불러오기 실패", message)
             self._vworld_task = None
-            self._vworld_checked_ids = set()
             if self._vworld_cursor_active:
                 QApplication.restoreOverrideCursor()
                 self._vworld_cursor_active = False

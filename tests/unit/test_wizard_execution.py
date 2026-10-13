@@ -123,6 +123,25 @@ def test_catalog_uses_the_same_entered_key_as_build(wizard, tmp_path, monkeypatc
     assert task.fromFunction.call_args.kwargs["api_key"] == "entered-vworld-key"
 
 
+def test_catalog_refresh_preserves_selection_edits_made_while_loading(wizard, tmp_path):
+    wizard.load_vworld_button = Mock()
+    wizard.layer_status = Mock()
+    wizard._discover_vworld_catalog = Mock()
+    wizard._finish_vworld_catalog = partial(_handler("_finish_vworld_catalog"), wizard)
+    wizard._render_layer_list = Mock()
+
+    _handler("_load_vworld_catalog", PLUGIN_DOTENV=tmp_path / ".env", QgsTask=Mock(),
+             Qt=SimpleNamespace(WaitCursor=1))(wizard)
+
+    wizard._selected_layers = lambda: ("power_line",)
+    wizard._finish_vworld_catalog(None, {"definitions": []})
+
+    wizard._render_layer_list.assert_called_once_with({"power_line"})
+    assert "선택 1개" in wizard.layer_status.setText.call_args.args[0]
+    assert wizard._vworld_task is None
+    wizard.load_vworld_button.setEnabled.assert_called_with(True)
+
+
 def test_blank_fields_fall_back_to_environment(wizard, tmp_path, monkeypatch):
     wizard.vworld_api_key = _field("  ")
     wizard.data_go_kr_service_key = _field("")
