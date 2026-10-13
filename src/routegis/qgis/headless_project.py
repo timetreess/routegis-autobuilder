@@ -220,6 +220,9 @@ def _headless_qgs(
     destination = ET.SubElement(canvas, "destinationsrs")
     _srs_element(destination, route.crs)
     properties = ET.SubElement(root, "properties")
+    # QGIS discards projectCrs when this legacy reprojection flag is absent.
+    spatial_ref = ET.SubElement(properties, "SpatialRefSys")
+    ET.SubElement(spatial_ref, "ProjectionsEnabled", {"type": "int"}).text = "1"
     paths = ET.SubElement(properties, "Paths")
     ET.SubElement(paths, "Absolute", {"type": "bool"}).text = "false"
     measurement = ET.SubElement(properties, "Measurement")

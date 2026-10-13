@@ -14,6 +14,7 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ### Fixed
 
+- Enable on-the-fly reprojection in background-generated QGIS projects so QGIS retains the project CRS and layer CRS changes move linework correctly on the map.
 - Import the bundled core through the plugin's own namespace so an in-session QGIS upgrade cannot combine the new Wizard with an older cached `routegis` service and fail with `build() got an unexpected keyword argument 'on_progress'`.
 - Exercise the real build task with an incompatible global core already loaded, and check the actual project-generation button after upgrades and plugin reloads in installed QGIS.
 

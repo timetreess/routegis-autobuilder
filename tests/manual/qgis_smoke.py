@@ -853,6 +853,103 @@ def _assert_headless_project_layout(project_root: Path, temporary_root: Path) ->
     )
 
 
+def _assert_layer_crs_updates(project_root: Path, temporary_root: Path) -> None:
+    from time import monotonic
+
+    from qgis.PyQt import sip
+    from qgis.PyQt.QtCore import QCoreApplication, QEvent, QObject
+    from qgis.PyQt.QtTest import QTest
+    from qgis.PyQt.QtWidgets import QDialogButtonBox
+    from qgis.core import QgsCoordinateReferenceSystem, QgsProject
+    from qgis.gui import QgsMapCanvas, QgsMessageBar, QgsProjectionSelectionWidget, QgsVectorLayerProperties
+
+    ProjectService = _core_module("app.project_service").ProjectService
+    ProjectConfig = _core_module("models").ProjectConfig
+    project = QgsProject.instance()
+    original_crs = QgsCoordinateReferenceSystem("EPSG:5186")
+    changed_crs = QgsCoordinateReferenceSystem("EPSG:5187")
+    canvas = QgsMapCanvas()
+    canvas.resize(640, 480)
+    canvas.setProject(project)
+    canvas.setCachingEnabled(True)
+    rendered = []
+    canvas.mapCanvasRefreshed.connect(lambda: rendered.append(True))
+
+    def wait_for_render(previous_count, previous_image=None):
+        deadline = monotonic() + 5
+        while monotonic() < deadline:
+            QTest.qWait(10)
+            if len(rendered) > previous_count and not canvas.isDrawing():
+                image = canvas.grab().toImage()
+                if previous_image is None or image != previous_image:
+                    return image
+        raise AssertionError("Map did not finish rendering the changed layer CRS")
+
+    try:
+        canvas.show()
+        for native in (False, True):
+            for shapefile in (True, False):
+                result = ProjectService().build(
+                    ProjectConfig(
+                        project_name=f"Layer CRS {native} {shapefile}",
+                        source_drawing=project_root / "tests" / "fixtures" / "sample_route.dxf",
+                        source_layers=(), source_crs="EPSG:5186", output_crs="EPSG:5186",
+                        buffer_distance=1000, selected_layers=(), project_type="non_linear",
+                        output_directory=temporary_root / "layer-crs", export_shapefile=shapefile,
+                    ),
+                    use_native_project=native,
+                )
+                assert project.read(str(result.project_file))
+                assert project.crs() == original_crs, "Generated project lost its CRS; reprojection is disabled"
+                canvas.setDestinationCrs(project.crs())
+                layer = project.mapLayersByName("선형")[0]
+                coordinates = next(layer.getFeatures()).geometry().asWkb()
+                canvas.setLayers([layer])
+                extent = layer.extent()
+                extent.scale(1.2)
+                canvas.setExtent(extent)
+                previous_count = len(rendered)
+                canvas.refresh()
+                before = wait_for_render(previous_count)
+
+                properties = QgsVectorLayerProperties(canvas, QgsMessageBar(canvas), layer, canvas)
+                selector = properties.findChild(QObject, "mCrsSelector")
+                assert selector is not None
+                selector = sip.cast(selector, QgsProjectionSelectionWidget)
+                selector.setCrs(changed_crs)
+                previous_count = len(rendered)
+                apply_buttons = [
+                    box.button(QDialogButtonBox.Apply)
+                    for box in properties.findChildren(QDialogButtonBox)
+                    if box.button(QDialogButtonBox.Apply) is not None
+                ]
+                assert len(apply_buttons) == 1
+                apply_buttons[0].click()
+                wait_for_render(previous_count, before)
+                assert next(layer.getFeatures()).geometry().asWkb() == coordinates
+                assert project.crs() == original_crs
+                assert layer.crs() == changed_crs
+                properties.close()
+                properties.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+                assert project.write()
+                canvas.stopRendering()
+                canvas.setLayers([])
+                assert project.read(str(result.project_file))
+                reopened = project.mapLayersByName("선형")[0]
+                assert reopened.crs() == changed_crs
+                assert project.crs() == original_crs
+                project.clear()
+    finally:
+        canvas.stopRendering()
+        canvas.setLayers([])
+        canvas.close()
+        canvas.deleteLater()
+        project.clear()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
 def _assert_empty_result_group_labels(project_root: Path, temporary_root: Path) -> None:
     from contextlib import nullcontext
     from unittest.mock import patch
@@ -1015,6 +1112,7 @@ def run(project_root: Path, plugin_directory: Path, previous_plugin_directory: P
             assert wizard.result.project_file.is_file()
             _assert_no_placeholder_leak(wizard.result)
             _assert_loaded_project(QgsProject.instance(), wizard)
+            _assert_layer_crs_updates(project_root, temporary_root)
             _assert_native_category_edge_values(temporary_root)
             _assert_headless_project_layout(project_root, temporary_root)
             _assert_empty_result_group_labels(project_root, temporary_root)

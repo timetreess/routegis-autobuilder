@@ -68,6 +68,7 @@ def test_headless_writer_uses_supplied_project_relative_paths(
 
     with zipfile.ZipFile(project_file) as archive:
         qgs = ET.fromstring(archive.read(archive.namelist()[0]))
+    assert qgs.findtext("./properties/SpatialRefSys/ProjectionsEnabled") == "1"
     sources = {
         layer.findtext("layername"): layer.findtext("datasource")
         for layer in qgs.findall("./projectlayers/maplayer")
