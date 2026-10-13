@@ -5,7 +5,7 @@ import json
 import re
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from math import isfinite
 from typing import Any
 from xml.etree import ElementTree as ET
@@ -24,13 +24,13 @@ from ...gis import AoiTile, AoiTilePlanner, compute_request_budget
 from ...gis.crs import normalize_crs, transform_layer
 from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLayer
 from ...security import redact_sensitive_text
+from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, read_response_bytes
 
 
 TRANSIENT_STATUS = {429, 500, 502, 503, 504}
 WFS_ENDPOINT = "https://api.vworld.kr/req/wfs"
 DATA_ENDPOINT = "https://api.vworld.kr/req/data"
 WFS_FEATURE_LIMIT = 1000
-DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 GEOMETRY_TYPES = {
     "PolygonPropertyType": "MultiPolygon",
     "MultiSurfacePropertyType": "MultiPolygon",
@@ -41,35 +41,6 @@ GEOMETRY_TYPES = {
     "PointPropertyType": "MultiPoint",
     "MultiPointPropertyType": "MultiPoint",
 }
-
-
-@dataclass
-class _FetchContext:
-    initial_tile_count: int
-    request_budget: int
-    request_count: int = 0
-    successful_tile_count: int = 0
-    active_tile: AoiTile | None = None
-    failed_tile_bbox: tuple[float, float, float, float] | None = None
-
-    def activate(self, tile: AoiTile) -> None:
-        self.active_tile = tile
-
-    def finish_tile(self) -> None:
-        self.successful_tile_count += 1
-        self.active_tile = None
-
-    def before_request(self) -> None:
-        if self.request_count >= self.request_budget:
-            self.capture_failure()
-            raise ProviderError(
-                f"VWorld 레이어 요청 예산을 초과했습니다: budget={self.request_budget}"
-            )
-        self.request_count += 1
-
-    def capture_failure(self) -> None:
-        if self.failed_tile_bbox is None and self.active_tile is not None:
-            self.failed_tile_bbox = self.active_tile.output_bounds
 
 
 class VWorldClient:
@@ -148,7 +119,7 @@ class VWorldClient:
         self,
         endpoint: str,
         params: dict[str, Any],
-        context: _FetchContext | None = None,
+        context: FetchContext | None = None,
     ) -> httpx.Response:
         last_error: Exception | None = None
         for attempt in range(self._retries + 1):
@@ -166,19 +137,7 @@ class VWorldClient:
                         retry_delay = self._backoff * (2**attempt)
                     else:
                         response.raise_for_status()
-                        declared_size = response.headers.get("content-length")
-                        if declared_size is not None:
-                            try:
-                                if int(declared_size) > self._max_response_bytes:
-                                    raise ProviderError("VWorld 응답 크기 제한을 초과했습니다.")
-                            except ValueError:
-                                pass
-
-                        content = bytearray()
-                        for chunk in response.iter_bytes():
-                            if len(content) + len(chunk) > self._max_response_bytes:
-                                raise ProviderError("VWorld 응답 크기 제한을 초과했습니다.")
-                            content.extend(chunk)
+                        content = read_response_bytes(response, self._max_response_bytes, "VWorld")
                         headers = [
                             (name, value)
                             for name, value in response.headers.multi_items()
@@ -188,7 +147,7 @@ class VWorldClient:
                         return httpx.Response(
                             response.status_code,
                             headers=headers,
-                            content=bytes(content),
+                            content=content,
                             request=response.request,
                             extensions=response.extensions,
                         )
@@ -209,7 +168,7 @@ class VWorldClient:
         self,
         endpoint: str,
         params: dict[str, Any],
-        context: _FetchContext | None = None,
+        context: FetchContext | None = None,
     ) -> dict[str, Any]:
         response = self._response(endpoint, params, context)
         try:
@@ -255,7 +214,7 @@ class VWorldClient:
         self,
         endpoint: str,
         params: dict[str, Any],
-        context: _FetchContext | None = None,
+        context: FetchContext | None = None,
     ) -> ET.Element:
         try:
             root = self._parse_xml(self._response(endpoint, params, context).content)
@@ -348,7 +307,7 @@ class VWorldClient:
     def _describe_feature_type(
         self,
         definition: LayerDefinition,
-        context: _FetchContext | None = None,
+        context: FetchContext | None = None,
     ) -> str:
         root = self._request_xml(
             self._endpoint(definition),
@@ -612,7 +571,7 @@ class VWorldClient:
         definition: LayerDefinition,
         planner: AoiTilePlanner,
         initial_tiles: list[AoiTile],
-        context: _FetchContext,
+        context: FetchContext,
     ) -> tuple[dict[str, dict[str, Any]], str]:
         pending = list(initial_tiles)
         raw_features: dict[str, dict[str, Any]] = {}
@@ -665,7 +624,7 @@ class VWorldClient:
         self,
         definition: LayerDefinition,
         initial_tiles: list[AoiTile],
-        context: _FetchContext,
+        context: FetchContext,
     ) -> tuple[dict[str, dict[str, Any]], str]:
         raw_features: dict[str, dict[str, Any]] = {}
         seen_ids: dict[str, str] = {}
@@ -704,7 +663,8 @@ class VWorldClient:
         return raw_features, response_crs
 
     def fetch_layer(self, definition: LayerDefinition, aoi: SpatialLayer) -> DownloadResult:
-        context = _FetchContext(
+        context = FetchContext(
+            provider="VWorld",
             initial_tile_count=0,
             request_budget=self._request_budget_maximum,
         )
@@ -725,7 +685,8 @@ class VWorldClient:
                 self._minimum_tile_size_m,
             )
             initial_tiles = planner.initial_tiles()
-            context = _FetchContext(
+            context = FetchContext(
+                provider="VWorld",
                 initial_tile_count=len(initial_tiles),
                 request_budget=compute_request_budget(
                     len(initial_tiles),

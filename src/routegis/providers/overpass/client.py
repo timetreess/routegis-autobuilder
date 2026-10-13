@@ -16,9 +16,10 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
 from ...errors import CrsError, ProviderError
-from ...gis import AoiTile, AoiTilePlanner, compute_request_budget
+from ...gis import AoiTilePlanner, compute_request_budget
 from ...gis.crs import normalize_crs, transform_layer
 from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLayer
+from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, read_response_bytes
 
 
 DEFAULT_OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
@@ -27,7 +28,6 @@ FALLBACK_OVERPASS_ENDPOINTS = (
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 )
 OVERPASS_USER_AGENT = "RouteGIS-AutoBuilder/0.2.6"
-DEFAULT_MAX_RESPONSE_BYTES = 67_108_864
 TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_RETRIES = 2
 MAX_RING_SEARCH_STATES = 50_000
@@ -48,35 +48,6 @@ _Coordinate = tuple[float, float]
 _Ring = tuple[_Coordinate, ...]
 _RingSegment = tuple[str, _Ring]
 _RingSearchState = tuple[_Ring, tuple[_RingSegment, ...], tuple[_Ring, ...]]
-
-
-@dataclass
-class _FetchContext:
-    initial_tile_count: int = 0
-    request_budget: int = 0
-    request_count: int = 0
-    successful_tile_count: int = 0
-    active_tile: AoiTile | None = None
-    failed_tile_bbox: tuple[float, float, float, float] | None = None
-
-    def activate(self, tile: AoiTile) -> None:
-        self.active_tile = tile
-
-    def finish_tile(self) -> None:
-        self.successful_tile_count += 1
-        self.active_tile = None
-
-    def before_request(self) -> None:
-        if self.request_count >= self.request_budget:
-            self.capture_failure()
-            raise ProviderError(
-                f"Overpass 레이어 요청 예산을 초과했습니다: budget={self.request_budget}"
-            )
-        self.request_count += 1
-
-    def capture_failure(self) -> None:
-        if self.failed_tile_bbox is None and self.active_tile is not None:
-            self.failed_tile_bbox = self.active_tile.output_bounds
 
 
 @dataclass(frozen=True)
@@ -223,7 +194,7 @@ class OverpassClient:
             )
         raise ProviderError(f"지원하지 않는 Overpass 레이어입니다: {definition.id}")
 
-    def _response_bytes(self, query: str, context: _FetchContext) -> bytes:
+    def _response_bytes(self, query: str, context: FetchContext) -> bytes:
         last_transport_error: httpx.HTTPError | None = None
         for attempt in range(self._retries + 1):
             context.before_request()
@@ -258,25 +229,13 @@ class OverpassClient:
                             )
                         raise ProviderError(message)
                     else:
-                        declared_size = response.headers.get("content-length")
-                        if declared_size is not None:
-                            try:
-                                if int(declared_size) > self._max_response_bytes:
-                                    raise ProviderError("Overpass 응답 크기 제한을 초과했습니다.")
-                            except ValueError:
-                                pass
-
-                        content = bytearray()
-                        for chunk in response.iter_bytes():
-                            if len(content) + len(chunk) > self._max_response_bytes:
-                                raise ProviderError("Overpass 응답 크기 제한을 초과했습니다.")
-                            content.extend(chunk)
+                        content = read_response_bytes(response, self._max_response_bytes, "Overpass")
                         # Reuse the working server for subsequent tiles and layers.
                         self._request_endpoints = (
                             self._request_endpoints[endpoint_index:]
                             + self._request_endpoints[:endpoint_index]
                         )
-                        return bytes(content)
+                        return content
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_transport_error = exc
                 if attempt < self._retries:
@@ -1030,7 +989,7 @@ class OverpassClient:
         definition: LayerDefinition,
         aoi: SpatialLayer,
     ) -> DownloadResult:
-        context = _FetchContext()
+        context = FetchContext("Overpass")
         try:
             self._validate_definition(definition)
             planner = AoiTilePlanner(

@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from math import isfinite
 from urllib.parse import unquote
 from xml.etree import ElementTree as ET
@@ -18,10 +17,11 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
 from ...errors import CrsError, ProviderError
-from ...gis import AoiTile, AoiTilePlanner, compute_request_budget
+from ...gis import AoiTilePlanner, compute_request_budget
 from ...gis.crs import normalize_crs, transform_layer
 from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLayer
 from ...security import redact_sensitive_text
+from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, read_response_bytes
 
 
 ECOLOGY_WFS_ENDPOINT = (
@@ -29,7 +29,6 @@ ECOLOGY_WFS_ENDPOINT = (
 )
 ECOLOGY_TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
 ECOLOGY_MAX_FEATURES = 500
-DEFAULT_MAX_RESPONSE_BYTES = 67_108_864
 
 WFS_NAMESPACE = "http://www.opengis.net/wfs"
 GML_NAMESPACE = "http://www.opengis.net/gml"
@@ -37,35 +36,6 @@ ECOLOGY_FEATURE_NAMESPACE = "http://openapi.nie.re.kr"
 ECOLOGY_FEATURE_NAME = "tbl_opn_eczm"
 ECOLOGY_GEOMETRY_PROPERTY = "geom"
 _URL_PATTERN = re.compile(r"https?://[^\s'\"<>]+", flags=re.IGNORECASE)
-
-
-@dataclass
-class _FetchContext:
-    initial_tile_count: int = 0
-    request_budget: int = 0
-    request_count: int = 0
-    successful_tile_count: int = 0
-    active_tile: AoiTile | None = None
-    failed_tile_bbox: tuple[float, float, float, float] | None = None
-
-    def activate(self, tile: AoiTile) -> None:
-        self.active_tile = tile
-
-    def finish_tile(self) -> None:
-        self.successful_tile_count += 1
-        self.active_tile = None
-
-    def before_request(self) -> None:
-        if self.request_count >= self.request_budget:
-            self.capture_failure()
-            raise ProviderError(
-                f"Ecology 레이어 요청 예산을 초과했습니다: budget={self.request_budget}"
-            )
-        self.request_count += 1
-
-    def capture_failure(self) -> None:
-        if self.failed_tile_bbox is None and self.active_tile is not None:
-            self.failed_tile_bbox = self.active_tile.output_bounds
 
 
 class EcologyClient:
@@ -160,7 +130,7 @@ class EcologyClient:
     def _response_bytes(
         self,
         params: dict[str, object],
-        context: _FetchContext,
+        context: FetchContext,
     ) -> bytes:
         last_transport_error: httpx.HTTPError | None = None
         for attempt in range(self._retries + 1):
@@ -181,26 +151,10 @@ class EcologyClient:
                             raise ProviderError(
                                 f"Ecology 리디렉션 응답을 거부했습니다: HTTP {status}"
                             )
-                        declared_size = response.headers.get("content-length")
-                        if declared_size is not None:
-                            try:
-                                if int(declared_size) > self._max_response_bytes:
-                                    raise ProviderError(
-                                        "Ecology 응답 크기 제한을 초과했습니다."
-                                    )
-                            except ValueError:
-                                pass
-
-                        content = bytearray()
-                        for chunk in response.iter_bytes():
-                            if len(content) + len(chunk) > self._max_response_bytes:
-                                raise ProviderError(
-                                    "Ecology 응답 크기 제한을 초과했습니다."
-                                )
-                            content.extend(chunk)
+                        content = read_response_bytes(response, self._max_response_bytes, "Ecology")
                         if status >= 400:
                             try:
-                                root = DefusedET.fromstring(bytes(content), forbid_dtd=True)
+                                root = DefusedET.fromstring(content, forbid_dtd=True)
                                 detail = self._redact(self._service_error(root))
                             except (ET.ParseError, DefusedXmlException):
                                 detail = ""
@@ -208,7 +162,7 @@ class EcologyClient:
                             raise ProviderError(
                                 f"Ecology 요청에 실패했습니다: HTTP {status}{suffix}"
                             )
-                        return bytes(content)
+                        return content
                 if retry_delay is not None:
                     self._sleep(retry_delay)
                     continue
@@ -596,7 +550,7 @@ class EcologyClient:
         return unary_union(geometries)
 
     def fetch_layer(self, definition: LayerDefinition, aoi: SpatialLayer) -> DownloadResult:
-        context = _FetchContext()
+        context = FetchContext("Ecology")
         try:
             planner = AoiTilePlanner(
                 aoi,
@@ -689,7 +643,7 @@ class EcologyClient:
     def _failed_result(
         self,
         definition: LayerDefinition,
-        context: _FetchContext,
+        context: FetchContext,
         error: ProviderError,
     ) -> DownloadResult:
         return DownloadResult(
