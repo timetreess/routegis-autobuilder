@@ -326,25 +326,35 @@ class ProjectService:
         self.last_coordinate_report: DxfCoordinateReport | None = None
         self.last_cad_lines: dict[str, list[LineString]] = {}
 
-    def analyze_drawing(self, drawing: Path, *, chord_tolerance: float | None = None) -> list[dict[str, Any]]:
+    def analyze_drawing(self, drawing: Path, *, chord_tolerance: float | None = None,
+                        on_progress: Callable[[int, str], None] | None = None) -> list[dict[str, Any]]:
         self.last_cad_warnings = ()
         self.last_coordinate_report = None
         self.last_cad_lines = {}
+        notify = on_progress or (lambda percent, message: None)
+        notify(0, "도면 분석 준비 중")
         reader = DxfReader(
             drawing,
             self.settings.chord_tolerance
             if chord_tolerance is None
             else chord_tolerance,
+            on_progress=notify,
         )
         from ..cad.route_detector import rank_candidates
 
         inventory = reader.inventory(self.settings.snap_tolerance)
-        self.last_cad_warnings = tuple(_cad_skip_issues(reader))
+        notify(85, "CAD 레이어별 객체 수와 길이 집계 완료 · 실제 좌표 범위 확인 중")
+        warnings = tuple(_cad_skip_issues(reader))
         if not inventory and reader.skipped_entities:
             raise CadReadError("도면의 지원 선 객체가 모두 길이 0이라 분석할 수 없습니다.")
-        self.last_coordinate_report = reader.coordinate_report()
-        self.last_cad_lines = reader.lines_by_layer()
-        return [asdict(item) for item in rank_candidates(inventory)]
+        report = reader.coordinate_report()
+        lines = reader.lines_by_layer()
+        candidates = [asdict(item) for item in rank_candidates(inventory)]
+        notify(100, f"도면 분석 완료 · CAD 레이어 {len(candidates)}개")
+        self.last_cad_warnings = warnings
+        self.last_coordinate_report = report
+        self.last_cad_lines = lines
+        return candidates
 
     def create_preview_shapefiles(
         self,
@@ -521,7 +531,8 @@ class ProjectService:
             )
 
         report(8, "DXF 도면의 선 객체 읽는 중")
-        reader = DxfReader(dxf_path, config.chord_tolerance)
+        reader = DxfReader(dxf_path, config.chord_tolerance,
+                           on_progress=lambda percent, message: report(8 + 7 * percent // 100, message))
         lines_by_layer = reader.lines_by_layer()
         cad_warnings = _cad_skip_issues(reader)
         self.last_cad_warnings = tuple(cad_warnings)

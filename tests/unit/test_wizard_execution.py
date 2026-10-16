@@ -29,6 +29,15 @@ class _QueuedBuild:
         self.cancel = Mock()
 
 
+class _QueuedAnalysis:
+    def __init__(self, settings, drawing, region):
+        self.drawing = drawing
+        self.region = region
+        self.progress_message = Mock()
+        self.completed = Mock()
+        self.cancel = Mock()
+
+
 def _handler(name, **globals):
     source = Path(__file__).resolve().parents[2] / "plugin" / "wizard.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -46,6 +55,7 @@ def _handler(name, **globals):
         "QMessageBox": Mock(),
         "QgsApplication": Mock(),
         "ProjectBuildTask": _QueuedBuild,
+        "DrawingAnalysisTask": _QueuedAnalysis,
         "Qt": SimpleNamespace(QueuedConnection=1),
         "QWizard": SimpleNamespace(CancelButton=1),
         "monotonic": monotonic,
@@ -86,10 +96,76 @@ def wizard(tmp_path):
         _set_build_running=Mock(), _append_build_log=Mock(), _on_build_progress=Mock(),
         _preview_timer=Mock(), _preview=Mock(), crs_recommendations=Mock(),
         coordinate_report=Mock(), recommendation_status=Mock(), preview_status=Mock(),
+        _analysis_task=None, _analysis_timer=Mock(), _preview_load_timer=Mock(),
+        _preview_iterator=None, _set_analysis_running=Mock(), _invalidate_analysis=Mock(),
+        _on_analysis_progress=Mock(), _finish_analysis=Mock(),
+        _append_analysis_log=Mock(), analysis_log=Mock(), analysis_progress=Mock(),
+        analysis_stage=Mock(), analysis_elapsed=Mock(),
     )
     wizard._finish_build = partial(_handler("_finish_build"), wizard)
     wizard._update_build_elapsed = partial(_handler("_update_build_elapsed"), wizard)
     return wizard
+
+
+def test_analysis_is_explicit_and_never_reads_dxf_on_the_ui_thread(wizard):
+    wizard.service.analyze_drawing = Mock()
+    _handler("_analyze")(wizard)
+    wizard.service.analyze_drawing.assert_not_called()
+    assert wizard._analysis_task.drawing == wizard._drawing_path()
+    assert wizard._analysis_task.region == "경기도"
+    wizard._analysis_timer.start.assert_called_once()
+    wizard._set_analysis_running.assert_called_with(True)
+
+
+def test_analysis_cannot_be_queued_twice(wizard):
+    analyze = _handler("_analyze")
+    analyze(wizard)
+    first = wizard._analysis_task
+    analyze(wizard)
+    assert wizard._analysis_task is first
+
+
+def test_analysis_progress_ignores_old_worker_and_redacts_keys(wizard):
+    old = _QueuedAnalysis(wizard.settings, wizard._drawing_path(), "경기도")
+    current = _QueuedAnalysis(wizard.settings, wizard._drawing_path(), "경기도")
+    wizard._analysis_task = current
+    wizard.sender = lambda: old
+    progress = _handler("_on_analysis_progress")
+    progress(wizard, 40, "old drawing")
+    wizard.analysis_progress.setValue.assert_not_called()
+    wizard.sender = lambda: current
+    progress(wizard, 60, "scan entered-vworld-key")
+    wizard.analysis_progress.setValue.assert_called_once_with(60)
+    assert "entered-vworld-key" not in wizard.analysis_stage.setText.call_args.args[0]
+
+
+def test_next_cannot_advance_while_native_preview_is_still_loading(wizard):
+    wizard._preview_iterator = iter([1])
+    assert _handler("validateCurrentPage")(wizard) is False
+
+
+def test_obsolete_analysis_completion_cannot_replace_new_drawing(wizard):
+    old = _QueuedAnalysis(wizard.settings, wizard._drawing_path(), "경기도")
+    current = _QueuedAnalysis(wizard.settings, wizard._drawing_path(), "경기도")
+    wizard._analysis_task = current
+    wizard.sender = lambda: old
+    _handler("_finish_analysis")(wizard, None, {"old": "result"})
+    assert wizard._analysis_task is current
+    wizard._set_analysis_running.assert_not_called()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_failed_or_cancelled_analysis_restores_controls_without_publishing(wizard, cancelled):
+    task = _QueuedAnalysis(wizard.settings, wizard._drawing_path(), "경기도")
+    wizard._analysis_task = task
+    wizard.sender = lambda: task
+    wizard._update_analysis_elapsed = Mock()
+    wizard.project_type = None
+    _handler("_finish_analysis")(wizard, None if cancelled else "read failed entered-vworld-key", None, cancelled)
+    assert wizard._analysis_task is None and wizard.project_type is None
+    wizard._analysis_timer.stop.assert_called_once()
+    wizard._set_analysis_running.assert_called_once_with(False)
+    assert "entered-vworld-key" not in wizard.analysis_stage.setText.call_args.args[0]
 
 
 @pytest.mark.parametrize("source", ["environment", "dotenv", "clean-pc"])

@@ -265,10 +265,104 @@ def _configure_fixture_build(wizard: Any, project_root: Path, output_root: Path,
     wizard.output_crs.setCurrentIndex(wizard.output_crs.findData("EPSG:5186"))
     wizard.buffer_distance.setValue(1000)
     wizard._analyze()
+    _wait_for_analysis(wizard)
     assert wizard.project_type == "non_linear"
     assert wizard.candidate_table.rowCount() > 0
     wizard.vworld_api_key.setText(FAKE_VWORLD_KEY)
     wizard.data_go_kr_service_key.setText(FAKE_ECOLOGY_KEY)
+
+
+def _wait_for_analysis(wizard, timeout=60):
+    from time import monotonic, sleep
+    from qgis.PyQt.QtWidgets import QApplication
+
+    deadline = monotonic() + timeout
+    while (wizard._analysis_task is not None or wizard._preview_iterator is not None) and monotonic() < deadline:
+        QApplication.processEvents()
+        sleep(0.005)
+    assert wizard._analysis_task is None and wizard._preview_iterator is None, "Drawing analysis timed out"
+
+
+def _assert_responsive_analysis(wizard_module, interface, temporary_root):
+    import ezdxf
+    from threading import Event
+    from time import monotonic
+    from unittest.mock import patch
+    from qgis.PyQt.QtCore import QTimer
+    from qgis.PyQt.QtWidgets import QWizard
+
+    drawing = temporary_root / "large-80km.dxf"
+    document = ezdxf.new()
+    document.units = 6
+    for index in range(20_000):
+        document.modelspace().add_line((200000 + index * 4, 500000), (200004 + index * 4, 500000))
+    document.saveas(drawing)
+    service_class = _core_module("app.project_service").ProjectService
+    real_analyze = service_class.analyze_drawing
+    for cancel in (False, True):
+        wizard = wizard_module.RouteGISWizard(interface)
+        wizard.preview_canvas.setRenderFlag(False)
+        wizard.drawing.setText(str(drawing))
+        wizard.show()
+        started = monotonic()
+        wizard.next()
+        assert monotonic() - started < 0.5
+        assert wizard.project_type is None and wizard._analysis_task is None
+        assert wizard.analyze_button.isEnabled()
+        waiting, release = Event(), Event()
+        ticks, percentages = [], []
+
+        def delayed_analyze(service, path, **kwargs):
+            notify = kwargs["on_progress"]
+
+            def pause_at_read(percent, message):
+                notify(percent, message)
+                if percent == 5:
+                    waiting.set()
+                    assert release.wait(10), "UI heartbeat did not release worker"
+                    notify(percent, message)  # Observe cancellation before parsing.
+
+            kwargs["on_progress"] = pause_at_read
+            return real_analyze(service, path, **kwargs)
+
+        timer = QTimer()
+
+        def heartbeat():
+            ticks.append(wizard.analysis_elapsed.text())
+            if waiting.is_set() and monotonic() - started > 1.2:
+                assert "DXF" in wizard.analysis_log.toPlainText()
+                assert 0 < wizard.analysis_progress.value() < 100
+                assert not wizard.analyze_button.isEnabled()
+                assert not wizard.button(QWizard.NextButton).isEnabled()
+                if cancel:
+                    wizard.reject()  # The bottom button cancels work, not the dialog.
+                release.set()
+                timer.stop()
+
+        timer.timeout.connect(heartbeat)
+        wizard.analysis_progress.valueChanged.connect(percentages.append)
+        timer.start(50)
+        try:
+            with patch.object(service_class, "analyze_drawing", delayed_analyze):
+                wizard.analyze_button.click()
+                _wait_for_analysis(wizard)
+            assert len(ticks) >= 5
+            assert wizard.analyze_button.isEnabled() and not wizard._analysis_timer.isActive()
+            if cancel:
+                assert wizard.project_type is None and not wizard.service.last_cad_lines
+                assert wizard._preview.line_layer is None
+                assert "취소" in wizard.analysis_stage.text()
+            else:
+                assert wizard.project_type == "non_linear"
+                assert wizard._preview.line_layer.featureCount() == 20_000
+                assert wizard.analysis_progress.value() == 100
+                assert percentages == sorted(percentages)
+                assert "20,000" in wizard.analysis_log.toPlainText()
+        finally:
+            release.set()
+            timer.stop()
+            wizard.close()
+            wizard.deleteLater()
 
 
 def _assert_cad_preview(wizard_module, interface, temporary_root):
@@ -294,9 +388,12 @@ def _assert_cad_preview(wizard_module, interface, temporary_root):
         wizard.business_region.setCurrentText("전라북도")
         wizard.drawing.setText(str(drawing))
         wizard.show()
-        wizard.next()  # Entering the analysis page loads recommendations AND the map.
+        wizard.next()  # Navigation must not read the DXF on the GUI thread.
         QApplication.processEvents()
         assert wizard.currentId() == wizard._cad_page_id
+        assert wizard.project_type is None and wizard._analysis_task is None
+        wizard.analyze_button.click()
+        _wait_for_analysis(wizard)
         assert wizard.project_type == "non_linear"
         assert wizard._crs_code(wizard.source_crs) == "EPSG:5186"
         assert wizard.crs_recommendations.count() > 0
@@ -351,11 +448,13 @@ def _assert_cad_preview(wizard_module, interface, temporary_root):
         assert not wizard.preview_canvas.layers()
         assert preview.line_layer is None
         wizard._analyze()
+        _wait_for_analysis(wizard)
         assert len(preview.project.mapLayers()) == 4  # One drawing, three basemap rasters.
         wizard.drawing.setText(str(temporary_root / "missing.dxf"))
         errors = []
         with patch.object(wizard_module.QMessageBox, "critical", lambda _, title, message: errors.append(message)):
             wizard._analyze()
+            _wait_for_analysis(wizard)
         assert errors and wizard.project_type is None
         assert preview.line_layer is None and not wizard.preview_canvas.layers()
         assert wizard.crs_recommendations.count() == 0
@@ -807,6 +906,7 @@ def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project
         wizard.vworld_api_key.setText(FAKE_VWORLD_KEY)
         wizard.data_go_kr_service_key.setText(encoded_key)
         wizard._analyze()
+        _wait_for_analysis(wizard)
         for failure in (False, True):
             requests.clear()
             wizard.project_name.setText(f"Provider requests {failure}")
@@ -1124,6 +1224,7 @@ def run(project_root: Path, plugin_directory: Path, previous_plugin_directory: P
             _assert_wizard_catalog(wizard)
             _assert_wizard_crs_choices(wizard)
             _assert_cad_preview(wizard_module, interface, temporary_root)
+            _assert_responsive_analysis(wizard_module, interface, temporary_root)
 
             _configure_fixture_build(wizard, project_root, temporary_root / "output")
             from inspect import signature

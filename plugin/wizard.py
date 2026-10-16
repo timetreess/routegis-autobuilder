@@ -42,7 +42,7 @@ from .routegis.providers.vworld.client import VWorldClient
 from .routegis.qgis.cad_preview import CadMapPreview
 from .routegis.security import redact_sensitive_text
 
-from .build_task import ProjectBuildTask
+from .build_task import DrawingAnalysisTask, ProjectBuildTask
 
 
 PLUGIN_DOTENV = Path(__file__).resolve().parent / ".env"
@@ -60,6 +60,8 @@ class RouteGISWizard(QWizard):
         self._vworld_task = None
         self._vworld_cursor_active = False
         self._build_task = None
+        self._analysis_task = None
+        self._preview_iterator = None
         self._build_started = 0.0
         self._last_build_update = 0.0
         self._build_cancel_requested = False
@@ -80,6 +82,13 @@ class RouteGISWizard(QWizard):
         self._build_timer = QTimer(self)
         self._build_timer.setInterval(1000)
         self._build_timer.timeout.connect(self._update_build_elapsed)
+        self._analysis_timer = QTimer(self)
+        self._analysis_timer.setInterval(1000)
+        self._analysis_timer.timeout.connect(self._update_analysis_elapsed)
+        self._preview_load_timer = QTimer(self)
+        self._preview_load_timer.setSingleShot(True)
+        self._preview_load_timer.setInterval(0)
+        self._preview_load_timer.timeout.connect(self._load_preview_step)
 
     @staticmethod
     def _path_row(line_edit: QLineEdit, callback) -> QWidget:
@@ -156,7 +165,7 @@ class RouteGISWizard(QWizard):
         page = QWizardPage()
         page.setTitle("2. 도면 분석")
         page.setSubTitle(
-            "DXF 좌표와 사업 지역으로 좌표계를 추천합니다. 기본도와 도면을 겹쳐 위치를 확인해 주세요."
+            "도면 분석을 누르면 DXF를 읽고 좌표계를 추천합니다. 진행 로그를 확인한 뒤 지도에서 위치를 비교하세요."
         )
         layout = QVBoxLayout(page)
         form = QFormLayout()
@@ -175,14 +184,14 @@ class RouteGISWizard(QWizard):
         self.recommendation_status = QLabel("사업 지역을 입력하면 좌표계 후보를 좁힐 수 있습니다.")
         self.recommendation_status.setWordWrap(True)
         layout.addWidget(self.recommendation_status)
-        analyze = QPushButton("도면 다시 분석 · 좌표계 추천")
-        analyze.clicked.connect(self._analyze)
+        self.analyze_button = QPushButton("도면 분석")
+        self.analyze_button.clicked.connect(self._analyze)
         self.candidate_table = QTableWidget(0, 4)
         self.candidate_table.setHorizontalHeaderLabels(["CAD 레이어", "객체 유형", "객체 수", "총 길이"])
         self.candidate_table.setSelectionMode(QTableWidget.NoSelection)
         self.candidate_table.setSortingEnabled(False)
         self.candidate_table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(analyze)
+        layout.addWidget(self.analyze_button)
         tabs = QTabWidget()
         map_page = QWidget()
         map_layout = QVBoxLayout(map_page)
@@ -196,6 +205,18 @@ class RouteGISWizard(QWizard):
         controls.addWidget(fit_button)
         controls.addStretch()
         map_layout.addLayout(controls)
+        self.analysis_stage = QLabel("도면 분석 대기 · 위의 도면 분석 버튼을 눌러 주세요.")
+        self.analysis_progress = QProgressBar()
+        self.analysis_progress.setRange(0, 100)
+        self.analysis_progress.setValue(0)
+        self.analysis_progress.setFormat("분석 단계 진행률 %p%")
+        self.analysis_elapsed = QLabel("파일 읽기 → 선 객체 분석 → 좌표계 추천 → 지도 표시")
+        self.analysis_log = QTextEdit()
+        self.analysis_log.setReadOnly(True)
+        self.analysis_log.setMaximumHeight(100)
+        self.analysis_log.document().setMaximumBlockCount(2000)
+        for widget in (self.analysis_stage, self.analysis_progress, self.analysis_elapsed, self.analysis_log):
+            map_layout.addWidget(widget)
         self.preview_canvas = QgsMapCanvas(map_page)
         self.preview_canvas.setMinimumHeight(240)
         self._preview = CadMapPreview(self.preview_canvas)
@@ -327,6 +348,17 @@ class RouteGISWizard(QWizard):
         self.recent.sync()
 
     def _invalidate_analysis(self, *_: object) -> None:
+        if self._analysis_task is not None:
+            self._analysis_task.cancel()
+            self._analysis_task = None
+        self._preview_load_timer.stop()
+        self._preview_iterator = None
+        self._analysis_timer.stop()
+        self._set_analysis_running(False)
+        self.analysis_progress.setValue(0)
+        self.analysis_stage.setText("도면 분석 대기 · 도면 분석 버튼을 눌러 주세요.")
+        self.analysis_elapsed.setText("파일 읽기 → 선 객체 분석 → 좌표계 추천 → 지도 표시")
+        self.analysis_log.clear()
         self.project_type = None
         self._preview_timer.stop()
         self._preview.clear_drawing()
@@ -339,18 +371,76 @@ class RouteGISWizard(QWizard):
         self.candidate_table.setRowCount(0)
         self.cad_status.setText("도면 또는 사업 지역이 변경되었습니다. 다시 분석해 주세요.")
 
-    def initializePage(self, page_id: int) -> None:
-        super().initializePage(page_id)
-        if page_id == self._cad_page_id and self.project_type is None:
-            self._analyze()
-
     def _analyze(self):
-        self._invalidate_analysis()
-        try:
-            candidates = self.service.analyze_drawing(self._drawing_path())
-        except (RouteGISError, OSError, ValueError) as exc:
-            QMessageBox.critical(self, "도면 분석 실패", str(exc))
+        if self._analysis_task is not None or self._preview_iterator is not None:
             return
+        self._invalidate_analysis()
+        self._analysis_started = monotonic()
+        self.analysis_log.clear()
+        self.analysis_progress.setValue(0)
+        self.analysis_progress.setFormat("분석 단계 진행률 %p%")
+        self.analysis_stage.setText("도면 분석 준비 중")
+        self._set_analysis_running(True)
+        self._analysis_timer.start()
+        self._append_analysis_log("도면 분석 시작 · 분석 중에도 진행 시간과 로그를 확인할 수 있습니다.")
+        try:
+            self._analysis_task = DrawingAnalysisTask(
+                self.settings, self._drawing_path(), self.business_region.currentText(),
+            )
+            self._analysis_task.progress_message.connect(self._on_analysis_progress, Qt.QueuedConnection)
+            self._analysis_task.completed.connect(self._finish_analysis)
+            QgsApplication.taskManager().addTask(self._analysis_task)
+        except Exception as exc:
+            self._finish_analysis(str(exc))
+
+    def _set_analysis_running(self, running: bool) -> None:
+        self.analyze_button.setEnabled(not running)
+        self.page(0).setEnabled(not running)
+        for widget in (self.source_crs, self.crs_recommendations, self.preview_basemap):
+            widget.setEnabled(not running)
+        for button in (QWizard.BackButton, QWizard.NextButton, QWizard.FinishButton):
+            self.button(button).setEnabled(not running)
+        self.button(QWizard.CancelButton).setEnabled(True)
+        self.button(QWizard.CancelButton).setText("분석 취소" if running else "취소")
+
+    def _append_analysis_log(self, message: str) -> None:
+        elapsed = max(0, int(monotonic() - self._analysis_started))
+        self.analysis_log.moveCursor(QTextCursor.End)
+        self.analysis_log.insertPlainText(f"[{elapsed // 60:02d}:{elapsed % 60:02d}] {message}\n")
+        self.analysis_log.ensureCursorVisible()
+
+    def _update_analysis_elapsed(self) -> None:
+        elapsed = max(0, int(monotonic() - self._analysis_started))
+        status = "분석 중" if self._analysis_timer.isActive() else "분석 종료"
+        self.analysis_elapsed.setText(f"{status} · 경과 {elapsed // 60:02d}:{elapsed % 60:02d}")
+
+    def _on_analysis_progress(self, percent: int, message: str) -> None:
+        if self._analysis_task is None or self.sender() is not self._analysis_task:
+            return
+        message = redact_sensitive_text(message, self.vworld_api_key.text(), self.data_go_kr_service_key.text()) or "도면 분석 중"
+        self.analysis_progress.setValue(percent)
+        self.analysis_stage.setText(message)
+        self._append_analysis_log(message)
+
+    def _finish_analysis(self, error=None, result=None, cancelled=False) -> None:
+        if isinstance(self.sender(), DrawingAnalysisTask) and self.sender() is not self._analysis_task:
+            return  # Queued completion from an invalidated/older drawing.
+        self._analysis_task = None
+        if error or cancelled or result is None:
+            self._analysis_timer.stop()
+            self._update_analysis_elapsed()
+            self._set_analysis_running(False)
+            message = "도면 분석 취소됨" if cancelled else f"도면 분석 실패: {error or '결과 없음'}"
+            message = redact_sensitive_text(message, self.vworld_api_key.text(), self.data_go_kr_service_key.text()) or "도면 분석 실패"
+            self.analysis_stage.setText(message)
+            self._append_analysis_log(message)
+            if not cancelled:
+                QMessageBox.critical(self, "도면 분석 실패", message)
+            return
+        self.service.last_cad_lines = result["lines"]
+        self.service.last_coordinate_report = result["report"]
+        self.service.last_cad_warnings = result["warnings"]
+        candidates = result["candidates"]
         self.candidate_table.setRowCount(len(candidates))
         for row, candidate in enumerate(candidates):
             values = (
@@ -364,6 +454,10 @@ class RouteGISWizard(QWizard):
         if not candidates:
             self.cad_status.setText("지원하는 선 객체가 없습니다.")
             QMessageBox.warning(self, "도면 분석 결과", "LINE/POLYLINE/LWPOLYLINE/ARC 객체가 없습니다.")
+            self._analysis_timer.stop()
+            self._set_analysis_running(False)
+            self.analysis_stage.setText("분석 완료 · 지원하는 선 객체 없음")
+            self._update_analysis_elapsed()
             return
         warning_suffix = ""
         if self.service.last_cad_warnings:
@@ -382,17 +476,54 @@ class RouteGISWizard(QWizard):
             f"범위 중심: ({report.center[0]:,.3f}, {report.center[1]:,.3f}) · "
             f"$INSUNITS={report.insunits} ({report.unit_name}) · X=동쪽, Y=북쪽으로 해석"
         )
-        self._recommend_coordinates()
-        try:
-            self._preview.load_lines(self.service.last_cad_lines)
-            self._refresh_preview()
-        except Exception as exc:
-            self.preview_status.setText(f"도면 미리보기 실패: {exc}")
+        self._recommend_coordinates(result["recommendations"])
+        self._preview_iterator = self._preview.iter_load_lines(self.service.last_cad_lines)
+        self._preview_load_timer.start()
 
-    def _recommend_coordinates(self):
+    def _load_preview_step(self) -> None:
+        if self._preview_iterator is None:
+            return
+        try:
+            done, total = next(self._preview_iterator)
+            self.analysis_progress.setValue(85 + 14 * done // total)
+            message = f"지도 미리보기 준비 중 · {done:,}/{total:,}개"
+            self.analysis_stage.setText(message)
+            # Bound UI log updates even when a drawing has millions of objects.
+            if done == total or done % 5000 == 0:
+                self._append_analysis_log(message)
+            self._preview_load_timer.start()
+            return
+        except StopIteration:
+            self._refresh_preview()
+            self.analysis_progress.setValue(100)
+            message = "도면 분석 완료 · 지도에서 좌표계를 확인해 주세요."
+        except Exception as exc:
+            self._preview.clear_drawing()
+            message = f"도면 분석 완료 · 미리보기 실패: {exc}"
+            self.preview_status.setText(message)
+        self._preview_iterator = None
+        self._analysis_timer.stop()
+        self._set_analysis_running(False)
+        self._update_analysis_elapsed()
+        self.analysis_stage.setText(message)
+        self._append_analysis_log(message)
+
+    def _cancel_analysis(self) -> None:
+        if self._analysis_task is not None:
+            self._analysis_task.cancel()
+            self.button(QWizard.CancelButton).setEnabled(False)
+            self.analysis_stage.setText("분석 취소 요청됨 · 현재 파일 읽기/객체 처리 종료 후 중단합니다.")
+        else:
+            self._invalidate_analysis()
+            self._update_analysis_elapsed()
+            self.analysis_stage.setText("도면 분석 취소됨")
+            self._append_analysis_log("도면 분석 취소됨 · 미완성 미리보기를 정리했습니다.")
+
+    def _recommend_coordinates(self, candidates=None):
         report = self.service.last_coordinate_report
         try:
-            candidates = recommend_crs(report.bounds, self.business_region.currentText())
+            if candidates is None:
+                candidates = recommend_crs(report.bounds, self.business_region.currentText())
         except RouteGISError as exc:
             self.recommendation_status.setText(str(exc))
             return
@@ -453,6 +584,8 @@ class RouteGISWizard(QWizard):
         self.preview_status.setText(f"지도 표시 오류 ({layer.name()}): {message}")
 
     def validateCurrentPage(self) -> bool:
+        if self._analysis_task is not None or self._preview_iterator is not None:
+            return False
         if self.currentId() == self._cad_page_id and self.project_type is None:
             QMessageBox.warning(self, "도면 분석 필요", "도면 분석을 실행해 주세요.")
             return False
@@ -679,6 +812,9 @@ class RouteGISWizard(QWizard):
     def _build(self):
         if self._build_task is not None:
             return
+        if self._analysis_task is not None or self._preview_iterator is not None:
+            QMessageBox.warning(self, "도면 분석 중", "도면 분석과 미리보기 준비가 끝난 뒤 생성해 주세요.")
+            return
         if self._vworld_task is not None:
             QMessageBox.warning(self, "목록 불러오는 중", "브이월드 목록 불러오기가 끝난 뒤 생성해 주세요.")
             return
@@ -812,8 +948,19 @@ class RouteGISWizard(QWizard):
             self._build_task.completed.disconnect(self._finish_build)
             self._build_task = None
         self._build_timer.stop()
+        if self._analysis_task is not None:
+            self._analysis_task.cancel()
+            self._analysis_task.progress_message.disconnect(self._on_analysis_progress)
+            self._analysis_task.completed.disconnect(self._finish_analysis)
+            self._analysis_task = None
+        self._analysis_timer.stop()
+        self._preview_load_timer.stop()
+        self._preview_iterator = None
 
     def reject(self) -> None:
+        if self._analysis_task is not None or self._preview_iterator is not None:
+            self._cancel_analysis()
+            return
         if self._build_task is not None:
             self._cancel_build()
             return
@@ -834,6 +981,10 @@ class RouteGISWizard(QWizard):
         self.iface.mapCanvas().refresh()
 
     def closeEvent(self, event) -> None:
+        if self._analysis_task is not None or self._preview_iterator is not None:
+            self._cancel_analysis()
+            event.ignore()
+            return
         if self._build_task is not None:
             self._cancel_build()
             event.ignore()

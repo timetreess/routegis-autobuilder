@@ -43,6 +43,11 @@ class CadMapPreview:
                 self._basemaps[key].append(layer)
 
     def load_lines(self, lines_by_layer):
+        for _ in self.iter_load_lines(lines_by_layer):
+            pass
+
+    def iter_load_lines(self, lines_by_layer, batch_size=500):
+        """Add bounded batches on the GUI thread, yielding between event turns."""
         from qgis.PyQt.QtCore import QVariant
         from qgis.core import QgsFeature, QgsField, QgsGeometry, QgsLineSymbol, QgsVectorLayer
 
@@ -51,7 +56,14 @@ class CadMapPreview:
         provider = layer.dataProvider()
         provider.addAttributes([QgsField("dxf_layer", QVariant.String)])
         layer.updateFields()
+        total = sum(map(len, lines_by_layer.values()))
+        if not total:
+            raise ExportError("DXF 선 객체 미리보기를 만들 수 없습니다.")
+        self.project.addMapLayer(layer, False)
+        self._drawing_group.addLayer(layer)
+        self.line_layer = layer
         features = []
+        done = 0
         for name, lines in lines_by_layer.items():
             for line in lines:
                 geometry = QgsGeometry()
@@ -60,16 +72,23 @@ class CadMapPreview:
                 feature.setGeometry(geometry)
                 feature.setAttributes([name])
                 features.append(feature)
-        success, _ = provider.addFeatures(features)
-        if not success or not features:
-            raise ExportError("DXF 선 객체 미리보기를 만들 수 없습니다.")
+                if len(features) >= batch_size:
+                    success, _ = provider.addFeatures(features)
+                    if not success:
+                        raise ExportError("DXF 선 객체 미리보기를 만들 수 없습니다.")
+                    done += len(features)
+                    features = []
+                    yield done, total
+        if features:
+            success, _ = provider.addFeatures(features)
+            if not success:
+                raise ExportError("DXF 선 객체 미리보기를 만들 수 없습니다.")
+            done += len(features)
+            yield done, total
         layer.updateExtents()
         layer.renderer().setSymbol(QgsLineSymbol.createSimple({
             "line_color": "235,35,65,255", "line_width": "0.6",
         }))
-        self.project.addMapLayer(layer, False)
-        self._drawing_group.addLayer(layer)
-        self.line_layer = layer
 
     def set_source_crs(self, code: str) -> tuple[float, float]:
         from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform

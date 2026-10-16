@@ -8,6 +8,8 @@ from shapely.geometry import LineString, box
 from routegis.gis import transform_geometry
 from routegis.models import SpatialFeature, SpatialLayer
 from routegis.providers.catalog import LayerCatalog
+from routegis.providers.download import retry_delay
+from routegis.providers.ecology.client import EcologyClient
 from routegis.providers.overpass.client import OverpassClient
 from routegis.providers.vworld.client import VWorldClient
 
@@ -117,3 +119,40 @@ def test_vworld_auth_error_is_not_retried_or_subdivided():
             LayerCatalog().get("land_ownership"), _aoi())
     assert result.status == "failed"
     assert result.request_count == len(calls) == 1
+
+
+@pytest.mark.parametrize("provider,layer_id", [
+    ("vworld", "land_ownership"), ("ecology", "ecology_nature"), ("osm", "river_area"),
+])
+def test_retry_after_is_respected_before_another_request_and_stream_is_closed(provider, layer_id):
+    calls, responses, delays = [], [], []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            response = httpx.Response(503, headers={"Retry-After": "2"}, stream=httpx.ByteStream(b""))
+            responses.append(response)
+            return response
+        if provider == "ecology":
+            return httpx.Response(200, text='<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs"/>')
+        return httpx.Response(200, json={"elements": []} if provider == "osm" else {"type": "FeatureCollection", "features": []})
+
+    def wait(delay):
+        assert responses[0].is_closed
+        delays.append(delay)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        options = {"client": transport, "sleep": wait, "retries": 1}
+        client = (VWorldClient("placeholder", **options) if provider == "vworld" else
+                  EcologyClient("placeholder", **options) if provider == "ecology" else OverpassClient(**options))
+        aoi = _aoi()
+        aoi.features = [SpatialFeature(box(200000, 500000, 201000, 501000))]
+        result = client.fetch_layer(LayerCatalog().get(layer_id), aoi)
+    assert result.status == "success", result.error
+    assert len(calls) == result.request_count == 2
+    assert delays == [2]
+
+
+@pytest.mark.parametrize("value,expected", [("999999", 60), ("nan", 0.5), ("-1", 0.5), ("bad", 0.5)])
+def test_retry_after_cannot_create_unbounded_or_invalid_delay(value, expected):
+    assert retry_delay(httpx.Response(429, headers={"Retry-After": value}), 0.5) == expected

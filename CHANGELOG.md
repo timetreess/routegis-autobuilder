@@ -4,6 +4,20 @@ All notable changes to RouteGIS AutoBuilder are documented here. This project fo
 
 The public repository starts with version 0.2.3. Earlier entries describe the application's development history.
 
+## [Unreleased]
+
+### Fixed
+
+- Accept the Ecology service's observed `kr.nie-ecobank` feature namespace alongside `http://openapi.nie.re.kr`, while preserving strict feature, property, geometry and CRS validation.
+- Retry VWorld HTTP-200 XML/JSON connection-pool timeout errors and honor bounded numeric `Retry-After` delays. Subdivide only the overloaded WFS/Overpass/Ecology tile after transient failures; retain completed tiles, deduplicate features and keep failures atomic. Bound outage subdivision to depth 4 in addition to existing size/depth/request limits.
+- Reuse the successfully subdivided power-query plan and byte-bounded responses for the companion power layer; do not repeat failed parent queries or reuse incomplete downloads.
+
+### Changed
+
+- Start drawing analysis explicitly on Wizard page two, not during Next-page navigation. Run DXF parsing, inventory and CRS recommendations in a cancellable background task, with progress, elapsed time and a log above the map.
+- Build the native QGIS preview in 500-feature GUI-event batches. Block navigation while analysis/preview work is active and reject stale results after drawing changes or plugin unload.
+- Emit per-tile request/retry/recovery progress during provider downloads and per-entity DXF scan progress during project builds.
+
 ## [0.2.9] - 2026-10-16
 
 ### Fixed

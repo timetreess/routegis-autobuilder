@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,19 +52,27 @@ class _DegenerateEntityError(CadReadError):
 
 
 class DxfReader:
-    def __init__(self, path: Path, chord_tolerance: float = 0.1):
+    def __init__(self, path: Path, chord_tolerance: float = 0.1, *,
+                 on_progress: Callable[[int, str], None] | None = None):
         self.path = Path(path)
         self.chord_tolerance = chord_tolerance
+        self._on_progress = on_progress
         if self.chord_tolerance <= 0:
             raise CadReadError("곡선 변환 허용오차는 0보다 커야 합니다.")
         if not self.path.is_file():
             raise CadReadError(f"DXF 파일을 찾을 수 없습니다: {self.path}")
         try:
+            self._report(5, f"DXF 파일 읽는 중: {self.path.name} · 큰 파일은 시간이 걸릴 수 있습니다.")
             self.document = ezdxf.readfile(self.path)
         except (OSError, ezdxf.DXFError) as exc:
             raise CadReadError(f"DXF 도면을 열 수 없습니다: {self.path.name}") from exc
         self._line_entries: dict[str, list[tuple[str, LineString]]] | None = None
         self._skipped_entities: tuple[SkippedCadEntity, ...] = ()
+        self._report(15, "DXF 파일 읽기 완료 · 지원 선 객체 확인 중")
+
+    def _report(self, percent: int, message: str) -> None:
+        if self._on_progress is not None:
+            self._on_progress(percent, message)
 
     def _supported_entities(self) -> list[DXFGraphic]:
         return [entity for entity in self.document.modelspace() if entity.dxftype() in SUPPORTED_TYPES]
@@ -89,7 +98,12 @@ class DxfReader:
             return self._line_entries
         entries: dict[str, list[tuple[str, LineString]]] = defaultdict(list)
         skipped: list[SkippedCadEntity] = []
-        for entity in self._supported_entities():
+        entities = self._supported_entities()
+        self._report(20, f"지원 선 객체 {len(entities):,}개 분석 시작")
+        for index, entity in enumerate(entities, 1):
+            if index % 250 == 0 or index == len(entities):
+                self._report(20 + 50 * (index - 1) // len(entities),
+                             f"선 객체 변환 중: {index:,}/{len(entities):,}개")
             layer = str(entity.dxf.layer)
             try:
                 line = self.entity_to_line(entity)
@@ -104,6 +118,7 @@ class DxfReader:
                 )
                 continue
             entries[layer].append((entity.dxftype(), line))
+        self._report(70, f"선 객체 분석 완료 · 유효 {sum(map(len, entries.values())):,}개 · 길이 0 제외 {len(skipped):,}개")
         self._line_entries = dict(entries)
         self._skipped_entities = tuple(skipped)
         return self._line_entries
