@@ -789,7 +789,11 @@ def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project
         return httpx.Response(200, json={"elements": []})
 
     def mock_client(**kwargs):
-        return real_client(**kwargs, transport=httpx.MockTransport(handler), trust_env=False)
+        # Keep the provider factory's TLS options, but isolate all proxy settings
+        # so these requests always use the offline transport.
+        kwargs["trust_env"] = False
+        kwargs.pop("proxy", None)
+        return real_client(**kwargs, transport=httpx.MockTransport(handler))
 
     with patch.object(wizard_module, "load_vworld_api_key", load_vworld_api_key), \
          patch.object(wizard_module, "load_data_go_kr_service_key", load_data_go_kr_service_key), \
@@ -811,7 +815,9 @@ def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project
             assert wizard.result is not None
             expected_status = "failed" if failure else "success"
             assert len(wizard.result.downloads) == len(DEFAULT_LAYER_IDS)
-            assert all(result.status == expected_status for result in wizard.result.downloads)
+            assert all(result.status == expected_status for result in wizard.result.downloads), [
+                (result.layer_id, result.status, result.error) for result in wizard.result.downloads
+            ]
             assert {request.url.host for request in requests} == {"api.vworld.kr", "apis.data.go.kr", "overpass-api.de"}
             osm_requests = [request for request in requests if request.url.host == "overpass-api.de"]
             assert len(osm_requests) == (3 if failure else 2)
