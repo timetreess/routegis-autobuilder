@@ -25,6 +25,7 @@ from ...gis.crs import normalize_crs, transform_layer
 from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLayer
 from ...security import redact_sensitive_text
 from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, read_response_bytes
+from ..tls import CERT_GUIDANCE, create_httpx_client, is_certificate_verification_error
 
 
 TRANSIENT_STATUS = {429, 500, 502, 503, 504}
@@ -100,7 +101,7 @@ class VWorldClient:
         self._max_response_bytes = max_response_bytes
         self._sleep = sleep
         self._owns_client = client is None
-        self._client = client or httpx.Client(timeout=httpx.Timeout(timeout), follow_redirects=False)
+        self._client = client or create_httpx_client(timeout=timeout)
 
     def close(self) -> None:
         if self._owns_client:
@@ -155,6 +156,13 @@ class VWorldClient:
                     self._sleep(retry_delay)
                     continue
             except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+                if is_certificate_verification_error(exc):
+                    raise ProviderError(
+                        "VWorld HTTPS 인증서를 확인할 수 없습니다. "
+                        "API Key 확인 이전의 보안 연결 단계에서 실패했습니다.\n"
+                        f"{CERT_GUIDANCE}\n"
+                        f"상세: {self._redact(str(exc))}"
+                    ) from exc
                 last_error = exc
                 transient = isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
                 if transient and attempt < self._retries:

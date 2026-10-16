@@ -22,6 +22,7 @@ from ...gis.crs import normalize_crs, transform_layer
 from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLayer
 from ...security import redact_sensitive_text
 from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, read_response_bytes
+from ..tls import CERT_GUIDANCE, create_httpx_client, is_certificate_verification_error
 
 
 ECOLOGY_WFS_ENDPOINT = (
@@ -35,7 +36,10 @@ GML_NAMESPACE = "http://www.opengis.net/gml"
 ECOLOGY_FEATURE_NAMESPACE = "http://openapi.nie.re.kr"
 ECOLOGY_FEATURE_NAME = "tbl_opn_eczm"
 ECOLOGY_GEOMETRY_PROPERTY = "geom"
-_URL_PATTERN = re.compile(r"https?://[^\s'\"<>]+", flags=re.IGNORECASE)
+# Only redact URLs carrying a query string (serviceKey etc.). The plain
+# namespace URI (http://openapi.nie.re.kr) must stay visible so the
+# "expected vs actual feature" error remains debuggable.
+_URL_PATTERN = re.compile(r"https?://[^\s'\"<>]+\?[^\s'\"<>]+", flags=re.IGNORECASE)
 
 
 class EcologyClient:
@@ -95,10 +99,7 @@ class EcologyClient:
         self._max_response_bytes = int(max_response_bytes)
         self._sleep = sleep
         self._owns_client = client is None
-        self._client = client or httpx.Client(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=False,
-        )
+        self._client = client or create_httpx_client(timeout=timeout)
 
     def close(self) -> None:
         if self._owns_client:
@@ -167,12 +168,24 @@ class EcologyClient:
                     self._sleep(retry_delay)
                     continue
             except (httpx.TimeoutException, httpx.TransportError) as exc:
+                if is_certificate_verification_error(exc):
+                    raise ProviderError(
+                        "Ecology HTTPS 인증서를 확인할 수 없습니다.\n"
+                        f"{CERT_GUIDANCE}\n"
+                        f"상세: {self._redact(str(exc))}"
+                    ) from exc
                 last_transport_error = exc
                 if attempt < self._retries:
                     self._sleep(self._backoff * (2**attempt))
                     continue
                 break
             except httpx.HTTPError as exc:
+                if is_certificate_verification_error(exc):
+                    raise ProviderError(
+                        "Ecology HTTPS 인증서를 확인할 수 없습니다.\n"
+                        f"{CERT_GUIDANCE}\n"
+                        f"상세: {self._redact(str(exc))}"
+                    ) from exc
                 last_transport_error = exc
                 break
 
@@ -422,13 +435,17 @@ class EcologyClient:
                 "Ecology featureMember에는 Feature 하나가 정확히 필요합니다."
             )
         feature = feature_children[0]
-        if self._qualified_name(feature.tag) != (
+        actual_namespace, actual_name = self._qualified_name(feature.tag)
+        if (actual_namespace, actual_name) != (
             ECOLOGY_FEATURE_NAMESPACE,
             ECOLOGY_FEATURE_NAME,
         ):
+            actual_label = actual_name or feature.tag
+            if actual_namespace and actual_namespace != ECOLOGY_FEATURE_NAMESPACE:
+                actual_label = f"{actual_label} (namespace={actual_namespace})"
             raise ProviderError(
                 "Ecology featureMember의 Feature가 올바르지 않습니다: "
-                f"예상 {{{ECOLOGY_FEATURE_NAMESPACE}}}{ECOLOGY_FEATURE_NAME}"
+                f"예상 {ECOLOGY_FEATURE_NAME}, 실제 {actual_label}"
             )
 
         fid = feature.attrib.get("fid", "").strip()

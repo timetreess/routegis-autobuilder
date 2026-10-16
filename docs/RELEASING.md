@@ -38,7 +38,7 @@ Before publication, the URLs in `plugins.xml` will not resolve to downloadable r
 Run the existing smoke script against the extracted release ZIP with QGIS 3.34.3's Python. This checks plugin loading, the Wizard, fixture project generation, styles and credential redaction. It also exercises all three providers through the Wizard with controlled HTTP responses, including credential precedence, encoded service keys and all-failed diagnostics. Background builds are checked for responsive UI timers, live progress, cancellation and error recovery. For a standard Windows installation:
 
 ```powershell
-python -m zipfile -e release-download/routegis_autobuilder.0.2.8.zip build/release-qgis-smoke
+python -m zipfile -e release-download/routegis_autobuilder.0.2.9.zip build/release-qgis-smoke
 & "C:\Program Files\QGIS 3.34.3\bin\python-qgis.bat" tests/manual/qgis_smoke.py --project-root . --plugin-dir build/release-qgis-smoke/routegis_autobuilder
 ```
 
@@ -47,7 +47,7 @@ The smoke check uses offline fixtures and isolated settings. It also checks the 
 Also run the upgrade check using an extracted, previously installed plugin. It loads the older plugin, unloads it through QGIS, replaces its files in the same temporary installation directory, and clicks **프로젝트 생성** without restarting Python. The new plugin must use its own bundled core, reach 100%, open the generated project, and build again after a QGIS plugin reload:
 
 ```powershell
-& "C:\Program Files\QGIS 3.34.3\bin\python-qgis.bat" tests/manual/qgis_smoke.py --project-root . --plugin-dir build/release-qgis-smoke/routegis_autobuilder --previous-plugin-dir build/release-qgis-v0.2.7/routegis_autobuilder
+& "C:\Program Files\QGIS 3.34.3\bin\python-qgis.bat" tests/manual/qgis_smoke.py --project-root . --plugin-dir build/release-qgis-smoke/routegis_autobuilder --previous-plugin-dir build/release-qgis-v0.2.8/routegis_autobuilder
 ```
 
 Keep the older installation unchanged for this check; rebuilding an old version number from current sources does not reproduce an actual upgrade.
@@ -58,13 +58,13 @@ After deciding to publish:
 
 1. Keep the version consistent in `pyproject.toml`, `src/routegis/__init__.py`, `plugin/metadata.txt` and `tests/manual/qgis_smoke.py`; update `CHANGELOG.md` and the plugin changelog.
 2. Merge the intended changes to `main`, run the preflight and installed-QGIS smoke check, and confirm the tested commit is the intended release commit.
-3. Create and push the version tag at that commit. For version 0.2.8:
+3. Create and push the version tag at that commit. For version 0.2.9:
 
    ```powershell
    git switch main
    git pull --ff-only origin main
-   git tag v0.2.8 <tested-commit-sha>
-   git push origin v0.2.8
+   git tag v0.2.9 <tested-commit-sha>
+   git push origin v0.2.9
    ```
 
 4. Monitor **GitHub Release**. A tag push reruns the preflight, verifies the tag matches the package version, then publishes the checked assets. No separate GitHub publishing secret is required; the publish job uses its scoped `GITHUB_TOKEN`.

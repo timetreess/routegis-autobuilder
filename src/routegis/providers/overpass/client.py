@@ -21,6 +21,7 @@ from ...gis import AoiTilePlanner, compute_request_budget
 from ...gis.crs import normalize_crs, transform_layer
 from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLayer
 from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, read_response_bytes
+from ..tls import CERT_GUIDANCE, create_httpx_client, is_certificate_verification_error
 
 
 DEFAULT_OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
@@ -115,10 +116,7 @@ class OverpassClient:
         self._power_response_cache: tuple[str, dict[str, bytes]] | None = None
         self._sleep = sleep
         self._owns_client = client is None
-        self._client = client or httpx.Client(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=False,
-        )
+        self._client = client or create_httpx_client(timeout=timeout)
 
     @property
     def endpoint(self) -> str:
@@ -244,12 +242,22 @@ class OverpassClient:
                         )
                         return content
             except (httpx.TimeoutException, httpx.TransportError) as exc:
+                if is_certificate_verification_error(exc):
+                    raise ProviderError(
+                        "Overpass HTTPS 인증서 검증 실패. "
+                        f"{CERT_GUIDANCE}"
+                    ) from exc
                 last_transport_error = exc
                 if attempt < self._retries:
                     self._sleep(self._backoff * (2**attempt))
                     continue
                 break
             except httpx.HTTPError as exc:
+                if is_certificate_verification_error(exc):
+                    raise ProviderError(
+                        "Overpass HTTPS 인증서 검증 실패. "
+                        f"{CERT_GUIDANCE}"
+                    ) from exc
                 last_transport_error = exc
                 break
             if retry_transient_status:
@@ -261,7 +269,7 @@ class OverpassClient:
         # Explain common PC-specific failures without echoing proxy credentials.
         detail = str(last_transport_error).casefold()
         if "certificate_verify_failed" in detail or "certificate verify failed" in detail:
-            hint = "HTTPS 인증서 검증 실패. PC의 신뢰 인증서와 사내 보안 프록시 설정을 확인해 주세요."
+            hint = f"HTTPS 인증서 검증 실패. {CERT_GUIDANCE}"
         elif "getaddrinfo" in detail or "name or service not known" in detail:
             hint = "DNS 조회 실패. 인터넷 연결과 DNS 설정을 확인해 주세요."
         elif isinstance(last_transport_error, httpx.TimeoutException):

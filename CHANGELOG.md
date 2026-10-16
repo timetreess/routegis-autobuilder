@@ -4,6 +4,16 @@ All notable changes to RouteGIS AutoBuilder are documented here. This project fo
 
 The public repository starts with version 0.2.3. Earlier entries describe the application's development history.
 
+## [0.2.9] - 2026-10-16
+
+### Fixed
+
+- Restore Windows system-trust TLS for VWorld, Ecology and Overpass (regression from 0.2.8 which dropped the 0.2.4 `tls.py` fix). Combine httpx/certifi defaults with `load_default_certs()`, explicit `certifi` bundle, `SSL_CERT_FILE`/`SSL_CERT_DIR` (QGIS bundle) and `ROUTEGIS_CA_BUNDLE`/`ROUTEGIS_CA_DIR` overrides so corporate HTTPS-inspection CAs trusted by Windows verify correctly on any company PC.
+- Detect corporate proxies for httpx: explicit `HTTPS_PROXY`/`HTTP_PROXY` env (via `trust_env`), QGIS Settings proxy (`설정 > 옵션 > 네트워크`) and Windows registry proxy via `urllib.request.getproxies()`, so QGIS-configured PCs no longer fail with `CERTIFICATE_VERIFY_FAILED` through an intercepting proxy.
+- Fail fast on certificate verification errors without retrying the same TLS handshake or sleeping; report Windows Trusted-Root registration guidance, QGIS restart, proxy check and `ROUTEGIS_CA_BUNDLE` option while keeping API keys redacted.
+- Keep Ecology feature errors debuggable: report `예상 tbl_opn_eczm, 실제 <tag>` with the actual tag instead of a `[redacted URL]`-mangled `{namespace}name`, and only redact URLs carrying a query string so the `openapi.nie.re.kr` namespace stays visible.
+- Add `tests/integration/test_provider_tls.py` regression coverage (system-trust context, env/QGIS proxy resolution, per-provider cert fail-fast, ecology message).
+
 ## [0.2.8] - 2026-10-13
 
 ### Changed
