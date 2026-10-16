@@ -19,12 +19,12 @@ from shapely.geometry import MultiLineString, MultiPoint, MultiPolygon, shape
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
-from ...errors import CrsError, ProviderError
+from ...errors import CrsError, ProviderError, RetryableProviderError
 from ...gis import AoiTile, AoiTilePlanner, compute_request_budget
 from ...gis.crs import normalize_crs, transform_layer
 from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLayer
 from ...security import redact_sensitive_text
-from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, read_response_bytes
+from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, is_resource_error, read_response_bytes, retry_delay, split_failed_tile
 from ..tls import CERT_GUIDANCE, create_httpx_client, is_certificate_verification_error
 
 
@@ -64,6 +64,7 @@ class VWorldClient:
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        on_progress: Callable[[str], None] | None = None,
     ):
         if not api_key.strip():
             raise ProviderError("VWorld API Key를 입력해 주세요.")
@@ -100,6 +101,7 @@ class VWorldClient:
         self._minimum_tile_size_m = minimum_tile_size_m
         self._max_response_bytes = max_response_bytes
         self._sleep = sleep
+        self._on_progress = on_progress
         self._owns_client = client is None
         self._client = client or create_httpx_client(timeout=timeout)
 
@@ -124,7 +126,7 @@ class VWorldClient:
     ) -> httpx.Response:
         last_error: Exception | None = None
         for attempt in range(self._retries + 1):
-            retry_delay: float | None = None
+            delay: float | None = None
             if context is not None:
                 context.before_request()
             try:
@@ -135,25 +137,34 @@ class VWorldClient:
                     follow_redirects=False,
                 ) as response:
                     if response.status_code in TRANSIENT_STATUS and attempt < self._retries:
-                        retry_delay = self._backoff * (2**attempt)
+                        delay = retry_delay(response, self._backoff * (2**attempt))
                     else:
                         response.raise_for_status()
                         content = read_response_bytes(response, self._max_response_bytes, "VWorld")
+                        service_error = self._resource_service_error(content)
+                        if service_error:
+                            last_error = RetryableProviderError(f"VWorld 서비스 일시 오류: {self._redact(service_error)}")
+                            if attempt >= self._retries:
+                                raise last_error
+                            delay = retry_delay(response, self._backoff * (2**attempt))
                         headers = [
                             (name, value)
                             for name, value in response.headers.multi_items()
                             if name.lower()
                             not in {"content-encoding", "content-length", "transfer-encoding"}
                         ]
-                        return httpx.Response(
-                            response.status_code,
-                            headers=headers,
-                            content=content,
-                            request=response.request,
-                            extensions=response.extensions,
-                        )
-                if retry_delay is not None:
-                    self._sleep(retry_delay)
+                        if not service_error:
+                            return httpx.Response(
+                                response.status_code,
+                                headers=headers,
+                                content=content,
+                                request=response.request,
+                                extensions=response.extensions,
+                            )
+                if delay is not None:
+                    if context is not None:
+                        context.notify(f"서버 일시 오류 · {delay:g}초 후 재시도 {attempt + 1}/{self._retries}")
+                    self._sleep(delay)
                     continue
             except (httpx.RequestError, httpx.HTTPStatusError) as exc:
                 if is_certificate_verification_error(exc):
@@ -170,7 +181,26 @@ class VWorldClient:
                     continue
                 break
         detail = self._redact(f"{type(last_error).__name__}: {last_error}" if last_error is not None else "알 수 없는 오류")
-        raise ProviderError(f"VWorld 요청에 실패했습니다: {detail}") from last_error
+        recoverable = isinstance(last_error, httpx.TimeoutException) or (
+            isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code in {500, 502, 503, 504}
+        )
+        error_type = RetryableProviderError if recoverable else ProviderError
+        raise error_type(f"VWorld 요청에 실패했습니다: {detail}") from last_error
+
+    @classmethod
+    def _resource_service_error(cls, content: bytes) -> str | None:
+        if content.lstrip().startswith(b"<"):
+            message = cls._xml_service_error(content)
+        else:
+            if b'"ERROR"' not in content:
+                return None
+            try:
+                payload = json.loads(content)
+                response = payload.get("response", {}) if isinstance(payload, dict) else {}
+                message = str(response.get("error", "")) if isinstance(response, dict) and response.get("status") == "ERROR" else ""
+            except (ValueError, UnicodeDecodeError):
+                return None
+        return message if message and is_resource_error(message) else None
 
     def _request(
         self,
@@ -592,11 +622,15 @@ class VWorldClient:
             tile = pending[next_tile]
             next_tile += 1
             context.activate(tile)
-            payload = self._request(
-                self._endpoint(definition),
-                self._params(definition, tile.request_bounds, 1),
-                context,
-            )
+            try:
+                payload = self._request(
+                    self._endpoint(definition),
+                    self._params(definition, tile.request_bounds, 1),
+                    context,
+                )
+            except RetryableProviderError as exc:
+                pending[next_tile:next_tile] = split_failed_tile(planner, tile, context, exc)
+                continue
             collection = self._feature_collection(payload)
             response_crs = self._response_crs(collection, definition.response_crs or definition.request_crs)
             features = collection.get("features")
@@ -675,6 +709,7 @@ class VWorldClient:
             provider="VWorld",
             initial_tile_count=0,
             request_budget=self._request_budget_maximum,
+            on_progress=self._on_progress,
         )
 
         try:
@@ -702,6 +737,7 @@ class VWorldClient:
                     self._request_budget_per_tile,
                     self._request_budget_maximum,
                 ),
+                on_progress=self._on_progress,
             )
             if not initial_tiles:
                 raise ProviderError("VWorld 조회 타일을 만들 수 없습니다.")

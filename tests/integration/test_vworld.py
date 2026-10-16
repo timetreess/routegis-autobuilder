@@ -528,7 +528,7 @@ def test_one_terminal_wfs_tile_atomically_discards_prior_tiles_and_reports_outpu
                     "features": [_polygon_feature("partial", (127.01, 37.0, 127.02, 37.01))],
                 },
             )
-        return httpx.Response(500, text="terminal")
+        return httpx.Response(400, text="terminal")
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
         result = VWorldClient("secret-key", retries=0, client=http_client).fetch_layer(

@@ -211,6 +211,15 @@ def _collection_xml(*member_contents: str, wfs_namespace: str = WFS_NAMESPACE) -
     ).encode("utf-8")
 
 
+def test_ecobank_namespace_from_live_service_keeps_geometry_and_properties():
+    result = _fetch(lambda _: httpx.Response(200, content=_collection_xml(
+        _feature_xml(feature_namespace="kr.nie-ecobank"),
+    )))
+    assert result.status == "success", result.error
+    assert result.feature_count == 1
+    assert result.layer.features[0].properties == SCALAR_PROPERTIES
+
+
 def _fetch_xml(
     content: bytes,
     *,
@@ -415,6 +424,7 @@ def test_exhausted_transient_status_is_terminal_after_configured_retries():
         result = EcologyClient(
             SERVICE_KEY,
             retries=2,
+            max_split_depth=0,
             backoff=0.5,
             client=http_client,
             sleep=sleeps.append,

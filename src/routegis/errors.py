@@ -22,5 +22,9 @@ class ProviderError(RouteGISError):
     """Raised for recoverable external spatial-provider failures."""
 
 
+class RetryableProviderError(ProviderError):
+    """A server timeout/resource failure for which a smaller query may work."""
+
+
 class ExportError(RouteGISError):
     """Raised when an output dataset cannot be written safely."""

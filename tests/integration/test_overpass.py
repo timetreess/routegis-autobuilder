@@ -1197,7 +1197,7 @@ def test_failed_power_response_is_not_reused(failure):
         return deepcopy(failure) if len(requests) == 1 else httpx.Response(200, json=_fixture("overpass_power.json"))
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
-        client = OverpassClient(retries=0, client=transport)
+        client = OverpassClient(retries=0, max_split_depth=0, client=transport)
         line = client.fetch_layer(_definition("power_line"), _aoi())
         support = client.fetch_layer(_definition("power_support"), _aoi())
 
@@ -1288,7 +1288,7 @@ def test_custom_endpoint_retries_only_the_configured_server():
         return httpx.Response(504)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
-        result = OverpassClient(endpoint=endpoint, backoff=0, client=http_client).fetch_layer(
+        result = OverpassClient(endpoint=endpoint, backoff=0, max_split_depth=0, client=http_client).fetch_layer(
             _definition("power_line"), _aoi()
         )
 
@@ -1306,7 +1306,7 @@ def test_all_servers_busy_fails_with_bounded_attempts_and_explains_server_cause(
         return httpx.Response(504)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
-        result = OverpassClient(retries=retries, backoff=0, client=http_client).fetch_layer(
+        result = OverpassClient(retries=retries, backoff=0, max_split_depth=0, client=http_client).fetch_layer(
             _definition("power_line"), _aoi()
         )
 
@@ -1422,7 +1422,7 @@ def test_retry_configuration_cannot_exceed_three_real_attempts():
         return httpx.Response(503)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
-        result = OverpassClient(retries=99, backoff=0, client=http_client).fetch_layer(
+        result = OverpassClient(retries=99, backoff=0, max_split_depth=0, client=http_client).fetch_layer(
             _definition("power_line"),
             _aoi(),
         )

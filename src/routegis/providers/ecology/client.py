@@ -16,12 +16,12 @@ from shapely.geometry import MultiPoint, MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
-from ...errors import CrsError, ProviderError
+from ...errors import CrsError, ProviderError, RetryableProviderError
 from ...gis import AoiTilePlanner, compute_request_budget
 from ...gis.crs import normalize_crs, transform_layer
 from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLayer
 from ...security import redact_sensitive_text
-from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, read_response_bytes
+from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, read_response_bytes, retry_delay, split_failed_tile
 from ..tls import CERT_GUIDANCE, create_httpx_client, is_certificate_verification_error
 
 
@@ -34,6 +34,7 @@ ECOLOGY_MAX_FEATURES = 500
 WFS_NAMESPACE = "http://www.opengis.net/wfs"
 GML_NAMESPACE = "http://www.opengis.net/gml"
 ECOLOGY_FEATURE_NAMESPACE = "http://openapi.nie.re.kr"
+ECOLOGY_FEATURE_NAMESPACES = frozenset({ECOLOGY_FEATURE_NAMESPACE, "kr.nie-ecobank"})
 ECOLOGY_FEATURE_NAME = "tbl_opn_eczm"
 ECOLOGY_GEOMETRY_PROPERTY = "geom"
 # Only redact URLs carrying a query string (serviceKey etc.). The plain
@@ -60,6 +61,7 @@ class EcologyClient:
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        on_progress: Callable[[str], None] | None = None,
     ):
         if not isinstance(service_key, str) or not service_key.strip():
             raise ProviderError("국립생태원 서비스 인증키를 입력해 주세요.")
@@ -98,6 +100,7 @@ class EcologyClient:
         self._minimum_tile_size_m = float(minimum_tile_size_m)
         self._max_response_bytes = int(max_response_bytes)
         self._sleep = sleep
+        self._on_progress = on_progress
         self._owns_client = client is None
         self._client = client or create_httpx_client(timeout=timeout)
 
@@ -135,7 +138,7 @@ class EcologyClient:
     ) -> bytes:
         last_transport_error: httpx.HTTPError | None = None
         for attempt in range(self._retries + 1):
-            retry_delay: float | None = None
+            delay: float | None = None
             context.before_request()
             try:
                 with self._client.stream(
@@ -146,7 +149,7 @@ class EcologyClient:
                 ) as response:
                     status = response.status_code
                     if status in ECOLOGY_TRANSIENT_STATUSES and attempt < self._retries:
-                        retry_delay = self._backoff * (2**attempt)
+                        delay = retry_delay(response, self._backoff * (2**attempt))
                     else:
                         if 300 <= status < 400:
                             raise ProviderError(
@@ -160,12 +163,14 @@ class EcologyClient:
                             except (ET.ParseError, DefusedXmlException):
                                 detail = ""
                             suffix = f" · {detail}" if detail else ""
-                            raise ProviderError(
+                            error_type = RetryableProviderError if status in {500, 502, 503, 504} else ProviderError
+                            raise error_type(
                                 f"Ecology 요청에 실패했습니다: HTTP {status}{suffix}"
                             )
                         return content
-                if retry_delay is not None:
-                    self._sleep(retry_delay)
+                if delay is not None:
+                    context.notify(f"서버 일시 오류 · {delay:g}초 후 재시도 {attempt + 1}/{self._retries}")
+                    self._sleep(delay)
                     continue
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 if is_certificate_verification_error(exc):
@@ -192,7 +197,8 @@ class EcologyClient:
         if last_transport_error is None:
             raise ProviderError("Ecology 요청에 실패했습니다.")
         detail = self._redact(str(last_transport_error))
-        raise ProviderError(
+        error_type = RetryableProviderError if isinstance(last_transport_error, httpx.TimeoutException) else ProviderError
+        raise error_type(
             f"Ecology 요청에 실패했습니다: {type(last_transport_error).__name__}: {detail}"
         ) from last_transport_error
 
@@ -436,10 +442,7 @@ class EcologyClient:
             )
         feature = feature_children[0]
         actual_namespace, actual_name = self._qualified_name(feature.tag)
-        if (actual_namespace, actual_name) != (
-            ECOLOGY_FEATURE_NAMESPACE,
-            ECOLOGY_FEATURE_NAME,
-        ):
+        if actual_namespace not in ECOLOGY_FEATURE_NAMESPACES or actual_name != ECOLOGY_FEATURE_NAME:
             actual_label = actual_name or feature.tag
             if actual_namespace and actual_namespace != ECOLOGY_FEATURE_NAMESPACE:
                 actual_label = f"{actual_label} (namespace={actual_namespace})"
@@ -454,7 +457,7 @@ class EcologyClient:
 
         geometry_properties = self._children_named(
             feature,
-            ECOLOGY_FEATURE_NAMESPACE,
+            actual_namespace,
             ECOLOGY_GEOMETRY_PROPERTY,
         )
         if len(geometry_properties) != 1:
@@ -479,7 +482,7 @@ class EcologyClient:
             if child is geometry_property:
                 continue
             property_namespace, property_name = self._qualified_name(child.tag)
-            if property_namespace != ECOLOGY_FEATURE_NAMESPACE or list(child):
+            if property_namespace != actual_namespace or list(child):
                 raise ProviderError(
                     f"Ecology Feature 속성 형식이 올바르지 않습니다: {property_name}"
                 )
@@ -567,7 +570,7 @@ class EcologyClient:
         return unary_union(geometries)
 
     def fetch_layer(self, definition: LayerDefinition, aoi: SpatialLayer) -> DownloadResult:
-        context = FetchContext("Ecology")
+        context = FetchContext("Ecology", on_progress=self._on_progress)
         try:
             planner = AoiTilePlanner(
                 aoi,
@@ -596,9 +599,13 @@ class EcologyClient:
                 tile = pending[next_tile]
                 next_tile += 1
                 context.activate(tile)
-                root = self._parse_collection(
-                    self._response_bytes(self._params(definition, tile.request_bounds), context)
-                )
+                try:
+                    root = self._parse_collection(
+                        self._response_bytes(self._params(definition, tile.request_bounds), context)
+                    )
+                except RetryableProviderError as exc:
+                    pending[next_tile:next_tile] = split_failed_tile(planner, tile, context, exc)
+                    continue
                 member_count = len(self._feature_members(root))
                 if member_count >= self._page_size:
                     children = planner.split(tile)

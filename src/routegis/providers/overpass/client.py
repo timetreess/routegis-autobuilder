@@ -16,11 +16,11 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
 from ... import __version__
-from ...errors import CrsError, ProviderError
-from ...gis import AoiTilePlanner, compute_request_budget
+from ...errors import CrsError, ProviderError, RetryableProviderError
+from ...gis import AoiTile, AoiTilePlanner, compute_request_budget
 from ...gis.crs import normalize_crs, transform_layer
 from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLayer
-from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, read_response_bytes
+from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, is_resource_error, read_response_bytes, retry_delay, split_failed_tile
 from ..tls import CERT_GUIDANCE, create_httpx_client, is_certificate_verification_error
 
 
@@ -58,6 +58,14 @@ class _Candidate:
     member_way_ids: frozenset[str] = frozenset()
 
 
+@dataclass
+class _PowerResponseCache:
+    layer_id: str
+    initial_tiles: tuple[AoiTile, ...]
+    leaves: tuple[AoiTile, ...]
+    responses: dict[str, bytes]
+
+
 class OverpassClient:
     def __init__(
         self,
@@ -75,6 +83,7 @@ class OverpassClient:
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        on_progress: Callable[[str], None] | None = None,
     ):
         self._endpoint = self._validated_endpoint(endpoint)
         # Custom endpoints stay pinned; public-server failover shares the retry budget.
@@ -113,8 +122,9 @@ class OverpassClient:
         self._max_split_depth = int(max_split_depth)
         self._minimum_tile_size_m = float(minimum_tile_size_m)
         self._max_response_bytes = int(max_response_bytes)
-        self._power_response_cache: tuple[str, dict[str, bytes]] | None = None
+        self._power_response_cache: _PowerResponseCache | None = None
         self._sleep = sleep
+        self._on_progress = on_progress
         self._owns_client = client is None
         self._client = client or create_httpx_client(timeout=timeout)
 
@@ -206,6 +216,7 @@ class OverpassClient:
             endpoint_index = min(attempt, len(self._request_endpoints) - 1)
             endpoint = self._request_endpoints[endpoint_index]
             retry_transient_status = False
+            delay = self._backoff * (2**attempt)
             try:
                 with self._client.stream(
                     "POST",
@@ -220,6 +231,7 @@ class OverpassClient:
                     status = response.status_code
                     if status in TRANSIENT_STATUS and attempt < self._retries:
                         retry_transient_status = True
+                        delay = retry_delay(response, delay)
                     elif 300 <= status < 400:
                         raise ProviderError(
                             f"Overpass 리디렉션 응답을 거부했습니다: HTTP {status}"
@@ -232,7 +244,8 @@ class OverpassClient:
                                 f"마지막 서버={urlsplit(endpoint).hostname}, "
                                 f"전송 시도={attempt + 1}회. 잠시 후 다시 시도해 주세요."
                             )
-                        raise ProviderError(message)
+                        error_type = RetryableProviderError if status in {500, 502, 503, 504} else ProviderError
+                        raise error_type(message)
                     else:
                         content = read_response_bytes(response, self._max_response_bytes, "Overpass")
                         # Reuse the working server for subsequent tiles and layers.
@@ -261,7 +274,8 @@ class OverpassClient:
                 last_transport_error = exc
                 break
             if retry_transient_status:
-                self._sleep(self._backoff * (2**attempt))
+                context.notify(f"서버 일시 오류 · {delay:g}초 후 대체 서버/재시도 {attempt + 1}/{self._retries}")
+                self._sleep(delay)
                 continue
 
         if last_transport_error is None:
@@ -278,7 +292,8 @@ class OverpassClient:
             hint = "프록시 연결 실패. 프록시 주소와 인증 설정을 확인해 주세요."
         else:
             hint = "서버 통신 실패. 인터넷 연결, 프록시와 방화벽 설정을 확인해 주세요."
-        raise ProviderError(
+        error_type = RetryableProviderError if isinstance(last_transport_error, httpx.TimeoutException) else ProviderError
+        raise error_type(
             f"Overpass 요청에 실패했습니다: {type(last_transport_error).__name__} · {hint}"
         ) from last_transport_error
 
@@ -294,7 +309,8 @@ class OverpassClient:
             raise ProviderError("Overpass 응답이 JSON 객체가 아닙니다.")
         remark = payload.get("remark")
         if isinstance(remark, str) and remark.strip():
-            raise ProviderError(f"Overpass 서비스 오류: {remark.strip()}")
+            error_type = RetryableProviderError if is_resource_error(remark) else ProviderError
+            raise error_type(f"Overpass 서비스 오류: {remark.strip()}")
         if not isinstance(payload.get("elements"), list):
             raise ProviderError("Overpass 응답의 elements 형식이 올바르지 않습니다.")
         return payload
@@ -1004,19 +1020,18 @@ class OverpassClient:
         definition: LayerDefinition,
         aoi: SpatialLayer,
     ) -> DownloadResult:
-        context = FetchContext("Overpass")
+        context = FetchContext("Overpass", on_progress=self._on_progress)
         # A successful power download can serve its companion layer once. A
         # repeated layer or intervening query starts fresh, as does each build.
-        cached_layer_id, cached_responses = self._power_response_cache or ("", {})
+        cache = self._power_response_cache
         self._power_response_cache = None
         reuse_power = (
             definition.id in _POWER_LAYER_IDS
-            and cached_layer_id in _POWER_LAYER_IDS
-            and cached_layer_id != definition.id
+            and cache is not None and cache.layer_id != definition.id
         )
-        if not reuse_power:
-            cached_responses = {}
+        cached_responses = cache.responses if reuse_power else {}
         power_responses: dict[str, bytes] = {}
+        leaves: list[AoiTile] = []
         cache_size = 0
         try:
             self._validate_definition(definition)
@@ -1028,6 +1043,9 @@ class OverpassClient:
                 self._minimum_tile_size_m,
             )
             initial_tiles = planner.initial_tiles()
+            reuse_power = reuse_power and cache.initial_tiles == tuple(initial_tiles)
+            if not reuse_power:
+                cached_responses = {}
             context.initial_tile_count = len(initial_tiles)
             context.request_budget = compute_request_budget(
                 len(initial_tiles),
@@ -1044,13 +1062,23 @@ class OverpassClient:
                 tuple[str, tuple[float, float, float, float]],
             ] = {}
             relation_member_way_ids: set[str] = set()
-            for tile in initial_tiles:
+            pending = list(cache.leaves if reuse_power else initial_tiles)
+            next_tile = 0
+            while next_tile < len(pending):
+                tile = pending[next_tile]
+                next_tile += 1
                 context.activate(tile)
                 query = self._query(definition, tile.request_bounds)
                 content = cached_responses.pop(query, None)
-                if content is None:
-                    content = self._response_bytes(query, context)
-                payload = self._payload(content)
+                try:
+                    if content is None:
+                        content = self._response_bytes(query, context)
+                    else:
+                        context.notify("송전선로·지지물의 성공 응답 재사용 · 추가 API 요청 없음")
+                    payload = self._payload(content)
+                except RetryableProviderError as exc:
+                    pending[next_tile:next_tile] = split_failed_tile(planner, tile, context, exc)
+                    continue
                 for identity, fingerprint in self._source_object_fingerprints(payload):
                     previous = source_origins.get(identity)
                     if previous is not None and previous[0] != fingerprint:
@@ -1072,6 +1100,7 @@ class OverpassClient:
                     candidates_by_id.setdefault(candidate.identity, candidate)
                 relation_member_way_ids.update(tile_member_ids)
                 context.finish_tile()
+                leaves.append(tile)
                 # Bound the entire retained response set, not just each tile.
                 if (
                     definition.id in _POWER_LAYER_IDS
@@ -1115,7 +1144,7 @@ class OverpassClient:
             ]
             # Publish only after all tiles, parsing and reprojection succeeded.
             if power_responses:
-                self._power_response_cache = (definition.id, power_responses)
+                self._power_response_cache = _PowerResponseCache(definition.id, tuple(initial_tiles), tuple(leaves), power_responses)
             return context.success_result(output_layer)
         except (CrsError, ProviderError) as exc:
             return context.failed_result(definition.id, str(exc))

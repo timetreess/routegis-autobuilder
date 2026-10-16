@@ -397,6 +397,7 @@ class ProjectService:
         api_key: str,
         data_go_kr_service_key: str,
         domain: str | None,
+        on_progress: Callable[[str], None] | None = None,
     ) -> SpatialDataProvider:
         common = {
             "request_budget_minimum": self.settings.download_request_budget_minimum,
@@ -405,6 +406,7 @@ class ProjectService:
             "max_split_depth": self.settings.download_max_split_depth,
             "minimum_tile_size_m": self.settings.download_minimum_tile_size_m,
             "max_response_bytes": self.settings.download_max_response_bytes,
+            "on_progress": on_progress,
         }
         if provider_name == "vworld":
             return VWorldClient(
@@ -592,6 +594,10 @@ class ProjectService:
                                         api_key=api_key,
                                         data_go_kr_service_key=data_go_kr_service_key,
                                         domain=domain if definition.provider == "vworld" else None,
+                                        on_progress=lambda message: report(
+                                            30 + 45 * (index - 1) // len(definitions),
+                                            f"{label} · {message}",
+                                        ),
                                     )
                                 except Exception as exc:
                                     provider_failures[definition.provider] = str(exc)
