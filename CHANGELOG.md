@@ -6,6 +6,11 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ## [Unreleased]
 
+### Changed
+
+- Fetch up to three provider groups concurrently, with one owned client and sequential layers/tiles per provider. Preserve Overpass companion-response reuse, selection/report order, monotonic progress and caller-thread callbacks/validation/export. Stop follow-up requests and close all workers before cancellation removes staging; injected providers remain sequential and caller-owned.
+- Summarize routine download progress after five seconds or 25 additional requests, plus exact final counters. Preserve retry/error/recovery/budget-change messages and check cancellation independently of log throttling.
+
 ### Fixed
 
 - Let successful VWorld WFS/Ecology saturation responses and VWorld Data API pagination reserve additional requests beyond the initial tile-based estimate, while retaining the per-layer absolute cap, counted retries and atomic failure semantics. Keep outage-only retries bounded by the existing estimate and recovery limits.

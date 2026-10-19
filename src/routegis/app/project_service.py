@@ -53,6 +53,7 @@ from ..qgis.project import write_qgis_project
 from ..report import GEOMETRY_POLICY, write_reports
 from ..security import redact_sensitive_text
 from ..web_map import write_web_map
+from .downloads import fetch_provider_groups
 
 
 def _redact(message: str | None, *secrets: str) -> str | None:
@@ -409,6 +410,7 @@ class ProjectService:
         data_go_kr_service_key: str,
         domain: str | None,
         on_progress: Callable[[str], None] | None = None,
+        check_cancelled: Callable[[], None] | None = None,
     ) -> SpatialDataProvider:
         common = {
             "request_budget_minimum": self.settings.download_request_budget_minimum,
@@ -418,6 +420,7 @@ class ProjectService:
             "minimum_tile_size_m": self.settings.download_minimum_tile_size_m,
             "max_response_bytes": self.settings.download_max_response_bytes,
             "on_progress": on_progress,
+            "check_cancelled": check_cancelled,
         }
         if provider_name == "vworld":
             return VWorldClient(
@@ -460,8 +463,11 @@ class ProjectService:
         provider: SpatialDataProvider | None = None,
         on_progress: Callable[[int, str], None] | None = None,
         use_native_project: bool = True,
+        check_cancelled: Callable[[], None] | None = None,
     ) -> PipelineResult:
         def notify(percent: int, message: str) -> None:
+            if check_cancelled is not None:
+                check_cancelled()
             if on_progress is not None:
                 on_progress(percent, _redact(message, api_key, data_go_kr_service_key) or "")
 
@@ -482,6 +488,7 @@ class ProjectService:
                 provider=provider,
                 on_progress=notify,
                 use_native_project=use_native_project,
+                check_cancelled=check_cancelled,
             )
             notify(99, "완성된 프로젝트를 최종 폴더에 저장 중")
             _close_project_logger(staging)
@@ -509,6 +516,7 @@ class ProjectService:
         provider: SpatialDataProvider | None,
         on_progress: Callable[[int, str], None],
         use_native_project: bool,
+        check_cancelled: Callable[[], None] | None,
     ) -> PipelineResult:
         secrets = (api_key, data_go_kr_service_key)
         log = _logger(project_directory / "logs" / "app.log", *secrets)
@@ -582,114 +590,71 @@ class ProjectService:
         downloads: list[DownloadResult] = []
         report(30, f"공간정보 {len(definitions)}개 수집 시작")
         if definitions:
-            owned_providers: dict[str, SpatialDataProvider] = {}
-            provider_failures: dict[str, str] = {}
-            try:
-                for index, definition in enumerate(definitions, start=1):
-                    label = f"[{index}/{len(definitions)}] {definition.name} [{definition.provider}]"
-                    report(
-                        30 + 45 * (index - 1) // len(definitions),
-                        f"{label} 수집 중 · 서버 응답/재시도 대기",
-                    )
-                    try:
-                        if provider is not None:
-                            active_provider = provider
-                        else:
-                            previous_failure = provider_failures.get(definition.provider)
-                            if previous_failure is not None:
-                                raise ProviderError(previous_failure)
-                            active_provider = owned_providers.get(definition.provider)
-                            if active_provider is None:
-                                try:
-                                    active_provider = self._provider(
-                                        definition.provider,
-                                        api_key=api_key,
-                                        data_go_kr_service_key=data_go_kr_service_key,
-                                        domain=domain if definition.provider == "vworld" else None,
-                                        on_progress=lambda message: report(
-                                            30 + 45 * (index - 1) // len(definitions),
-                                            f"{label} · {message}",
-                                        ),
-                                    )
-                                except Exception as exc:
-                                    provider_failures[definition.provider] = str(exc)
-                                    raise
-                                owned_providers[definition.provider] = active_provider
-                        result = active_provider.fetch_layer(definition, aoi)
-                        if result.layer_id != definition.id:
-                            raise RouteGISError(
-                                "공급자 결과 레이어 ID가 요청과 다릅니다: "
-                                f"{result.layer_id} (예상 {definition.id})"
-                            )
-                        result.error = _redact(result.error, *secrets)
-                        if result.status != "success":
+            completed: dict[int, DownloadResult] = {}
+            download_issues: dict[int, list[ValidationIssue]] = {}
+            labels = [f"[{index + 1}/{len(definitions)}] {definition.name} [{definition.provider}]"
+                      for index, definition in enumerate(definitions)]
+
+            def download_progress(index: int, message: str) -> None:
+                report(30 + 45 * len(completed) // len(definitions), f"{labels[index]} · {message}")
+
+            def accept_download(index: int, outcome: DownloadResult | Exception) -> None:
+                definition = definitions[index]
+                try:
+                    if isinstance(outcome, Exception):
+                        raise outcome
+                    result = outcome
+                    if result.layer_id != definition.id:
+                        raise RouteGISError(
+                            "공급자 결과 레이어 ID가 요청과 다릅니다: "
+                            f"{result.layer_id} (예상 {definition.id})"
+                        )
+                    result.error = _redact(result.error, *secrets)
+                    if result.status != "success":
+                        result.status = "failed"
+                        result.layer = None
+                        result.feature_count = 0
+                        if not result.error:
+                            result.error = "공급자가 레이어를 완전하게 반환하지 않았습니다."
+                        log.warning("레이어 다운로드 실패: %s: %s", definition.id, result.error)
+                    elif result.layer is None:
+                        result.status = "failed"
+                        result.feature_count = 0
+                        result.error = "공급자가 완전한 레이어를 반환하지 않았습니다."
+                        log.warning("레이어 다운로드 실패: %s: %s", definition.id, result.error)
+                    else:
+                        result.feature_count = len(result.layer.features)
+                        layer_issues = _provider_contract_issues(definition, result.layer, aoi)
+                        if not any(issue.severity == "error" for issue in layer_issues):
+                            layer_issues += validate_layer(result.layer) + validate_layer_intersects_aoi(result.layer, aoi)
+                        download_issues[index] = layer_issues
+                        if any(issue.severity == "error" for issue in layer_issues):
                             result.status = "failed"
+                            result.error = "Geometry 또는 좌표계 검증에 실패했습니다."
                             result.layer = None
                             result.feature_count = 0
-                            if not result.error:
-                                result.error = "공급자가 레이어를 완전하게 반환하지 않았습니다."
-                            log.warning(
-                                "레이어 다운로드 실패: %s: %s",
-                                definition.id,
-                                result.error,
-                            )
-                        elif result.layer is None:
-                            result.status = "failed"
-                            result.feature_count = 0
-                            result.error = "공급자가 완전한 레이어를 반환하지 않았습니다."
-                            log.warning(
-                                "레이어 다운로드 실패: %s: %s",
-                                definition.id,
-                                result.error,
-                            )
-                        else:
-                            result.feature_count = len(result.layer.features)
-                            layer_issues = _provider_contract_issues(
-                                definition,
-                                result.layer,
-                                aoi,
-                            )
-                            if not any(
-                                issue.severity == "error"
-                                for issue in layer_issues
-                            ):
-                                layer_issues += validate_layer(
-                                    result.layer
-                                ) + validate_layer_intersects_aoi(
-                                    result.layer,
-                                    aoi,
-                                )
-                            issues.extend(layer_issues)
-                            if any(issue.severity == "error" for issue in layer_issues):
-                                result.status = "failed"
-                                result.error = "Geometry 또는 좌표계 검증에 실패했습니다."
-                                result.layer = None
-                                result.feature_count = 0
-                        downloads.append(result)
-                    except Exception as exc:
-                        log.warning("레이어 다운로드 실패: %s: %s", definition.id, exc)
-                        downloads.append(
-                            DownloadResult(
-                                layer_id=definition.id,
-                                status="failed",
-                                error=_redact(str(exc), *secrets),
-                            )
-                        )
-                    result = downloads[-1]
-                    detail = (
-                        f"성공 · {result.feature_count}개"
-                        if result.status == "success"
-                        else f"실패 · {result.error or '상세 오류 없음'}"
-                    )
-                    report(30 + 45 * index // len(definitions), f"{label} {detail}")
-            finally:
-                for owned_provider in owned_providers.values():
-                    close = getattr(owned_provider, "close", None)
-                    if callable(close):
-                        try:
-                            close()
-                        except Exception as exc:
-                            log.warning("공급자 종료 실패: %s", exc)
+                except Exception as exc:
+                    log.warning("레이어 다운로드 실패: %s: %s", definition.id, exc)
+                    result = DownloadResult(layer_id=definition.id, status="failed", error=_redact(str(exc), *secrets))
+                completed[index] = result
+                detail = (f"성공 · {result.feature_count}개" if result.status == "success"
+                          else f"실패 · {result.error or '상세 오류 없음'}")
+                report(30 + 45 * len(completed) // len(definitions),
+                       f"{labels[index]} {detail} · API 요청 {result.request_count}회 · 완료 타일 {result.successful_tile_count}개")
+
+            fetch_provider_groups(
+                definitions, aoi, provider=provider,
+                create_provider=lambda name, progress, check: self._provider(
+                    name, api_key=api_key, data_go_kr_service_key=data_go_kr_service_key,
+                    domain=domain if name == "vworld" else None, on_progress=progress, check_cancelled=check,
+                ),
+                on_progress=download_progress, on_result=accept_download,
+                on_close_error=lambda exc: log.warning("공급자 종료 실패: %s", exc),
+                check_cancelled=check_cancelled,
+            )
+            downloads = [completed[index] for index in range(len(definitions))]
+            for index in range(len(definitions)):
+                issues.extend(download_issues.get(index, []))
 
         definitions_by_id = {definition.id: definition for definition in definitions}
         successful_results = [

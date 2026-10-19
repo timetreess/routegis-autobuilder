@@ -1041,16 +1041,14 @@ def test_pipeline_routes_selected_order_with_lazy_reused_owned_clients(
     )
 
     assert [download.layer_id for download in result.downloads] == list(selected_layers)
-    assert creations == ["vworld", "osm", "ecology"]
-    assert [
-        (provider_name, credentials["domain"])
-        for provider_name, credentials in factory_calls
-    ] == [
-        ("vworld", "https://registered.example.com"),
-        ("osm", None),
-        ("ecology", None),
-    ]
-    assert [layer_id for _provider_name, layer_id in events] == list(selected_layers)
+    assert sorted(creations) == ["ecology", "osm", "vworld"]
+    assert {name: credentials["domain"] for name, credentials in factory_calls} == {
+        "vworld": "https://registered.example.com", "osm": None, "ecology": None,
+    }
+    for name in clients:
+        assert [layer_id for provider_name, layer_id in events if provider_name == name] == [
+            layer_id for layer_id in selected_layers if service.catalog.get(layer_id).provider == name
+        ]
     assert all(client.closed for client in clients.values())
 
 
@@ -1116,7 +1114,7 @@ def test_owned_constructor_failure_isolated_and_later_providers_continue_and_clo
     )
 
     assert [download.status for download in result.downloads] == ["failed", "success", "success"]
-    assert [layer_id for _provider_name, layer_id in events] == ["land_ownership", "power_line"]
+    assert sorted(layer_id for _provider_name, layer_id in events) == ["land_ownership", "power_line"]
     assert all(client.closed for client in clients.values())
     assert vworld_secret not in (result.downloads[0].error or "")
     assert ecology_secret not in (result.downloads[0].error or "")

@@ -62,6 +62,7 @@ class EcologyClient:
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
         on_progress: Callable[[str], None] | None = None,
+        check_cancelled: Callable[[], None] | None = None,
     ):
         if not isinstance(service_key, str) or not service_key.strip():
             raise ProviderError("국립생태원 서비스 인증키를 입력해 주세요.")
@@ -101,6 +102,7 @@ class EcologyClient:
         self._max_response_bytes = int(max_response_bytes)
         self._sleep = sleep
         self._on_progress = on_progress
+        self._check_cancelled = check_cancelled
         self._owns_client = client is None
         self._client = client or create_httpx_client(timeout=timeout)
 
@@ -579,7 +581,8 @@ class EcologyClient:
 
     def fetch_layer(self, definition: LayerDefinition, aoi: SpatialLayer) -> DownloadResult:
         context = FetchContext("Ecology", on_progress=self._on_progress,
-                               request_budget_maximum=self._request_budget_maximum)
+                               request_budget_maximum=self._request_budget_maximum,
+                               check_cancelled=self._check_cancelled)
         try:
             planner = AoiTilePlanner(
                 aoi,

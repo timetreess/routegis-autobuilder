@@ -853,6 +853,7 @@ def _assert_no_placeholder_leak(result: Any) -> None:
 def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project_root: Path, temporary_root: Path) -> None:
     """Exercise real Qt fields, credential resolution and all provider request paths."""
     from dataclasses import replace
+    from threading import Barrier, Lock, get_ident
     from unittest.mock import patch
     from urllib.parse import quote
 
@@ -868,10 +869,18 @@ def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project
     dotenv.write_text("VWORLD_API_KEY=stale-vworld\nDATA_GO_KR_SERVICE_KEY=stale-ecology\n", encoding="utf-8")
     real_client = httpx.Client
     requests = []
+    first_requests, request_threads = set(), {}
+    barrier, lock = Barrier(3), Lock()
     failure = False
 
     def handler(request):
-        requests.append(request)
+        with lock:
+            requests.append(request)
+            first = request.url.host not in first_requests
+            first_requests.add(request.url.host)
+            request_threads.setdefault(request.url.host, set()).add(get_ident())
+        if first:
+            barrier.wait(timeout=10)
         if request.url.host == "api.vworld.kr":
             assert request.url.params["key"] == FAKE_VWORLD_KEY
             if failure:
@@ -910,6 +919,9 @@ def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project
         _wait_for_analysis(wizard)
         for failure in (False, True):
             requests.clear()
+            first_requests.clear()
+            request_threads.clear()
+            barrier = Barrier(3)
             wizard.project_name.setText(f"Provider requests {failure}")
             wizard._build()
             _wait_for_build(wizard)
@@ -920,6 +932,8 @@ def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project
                 (result.layer_id, result.status, result.error) for result in wizard.result.downloads
             ]
             assert {request.url.host for request in requests} == {"api.vworld.kr", "apis.data.go.kr", "overpass-api.de"}
+            assert all(len(threads) == 1 for threads in request_threads.values())
+            assert len(set().union(*request_threads.values())) == 3
             osm_requests = [request for request in requests if request.url.host == "overpass-api.de"]
             assert len(osm_requests) == (3 if failure else 2)
             assert all(b'way["waterway"~' not in request.content for request in osm_requests)

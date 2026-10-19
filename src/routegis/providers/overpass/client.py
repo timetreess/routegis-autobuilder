@@ -84,6 +84,7 @@ class OverpassClient:
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
         on_progress: Callable[[str], None] | None = None,
+        check_cancelled: Callable[[], None] | None = None,
     ):
         self._endpoint = self._validated_endpoint(endpoint)
         # Custom endpoints stay pinned; public-server failover shares the retry budget.
@@ -125,6 +126,7 @@ class OverpassClient:
         self._power_response_cache: _PowerResponseCache | None = None
         self._sleep = sleep
         self._on_progress = on_progress
+        self._check_cancelled = check_cancelled
         self._owns_client = client is None
         self._client = client or create_httpx_client(timeout=timeout)
 
@@ -1020,7 +1022,8 @@ class OverpassClient:
         definition: LayerDefinition,
         aoi: SpatialLayer,
     ) -> DownloadResult:
-        context = FetchContext("Overpass", on_progress=self._on_progress)
+        context = FetchContext("Overpass", on_progress=self._on_progress,
+                               check_cancelled=self._check_cancelled)
         # A successful power download can serve its companion layer once. A
         # repeated layer or intervening query starts fresh, as does each build.
         cache = self._power_response_cache

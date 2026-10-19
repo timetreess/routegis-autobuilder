@@ -68,9 +68,12 @@ class ProjectBuildTask(QgsTask):
         self.result = None
         self.error = None
 
-    def _report(self, percent: int, message: str) -> None:
+    def _check_cancelled(self) -> None:
         if self.isCanceled():
             raise _BuildCancelled()
+
+    def _report(self, percent: int, message: str) -> None:
+        self._check_cancelled()
         self.setProgress(percent)
         self.progress_message.emit(percent, redact_sensitive_text(message, *self._keys) or "")
 
@@ -83,6 +86,7 @@ class ProjectBuildTask(QgsTask):
                 domain=None,
                 on_progress=self._report,
                 use_native_project=False,
+                check_cancelled=self._check_cancelled,
             )
             for item in self.result.downloads:
                 item.error = redact_sensitive_text(item.error, *self._keys)

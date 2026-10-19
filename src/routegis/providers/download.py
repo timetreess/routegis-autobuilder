@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections.abc import Callable
 from math import isfinite
+from time import monotonic
 
 import httpx
 
@@ -59,19 +60,32 @@ class FetchContext:
     failed_tile_bbox: tuple[float, float, float, float] | None = None
     on_progress: Callable[[str], None] | None = None
     request_budget_maximum: int | None = None
+    check_cancelled: Callable[[], None] | None = None
+    _last_progress_time: float = field(default=float("-inf"), init=False, repr=False)
+    _last_progress_request: int = field(default=0, init=False, repr=False)
 
     def notify(self, message: str) -> None:
         if self.on_progress is not None:
             self.on_progress(message)
 
     def activate(self, tile: AoiTile) -> None:
+        if self.check_cancelled is not None:
+            self.check_cancelled()
         self.active_tile = tile
-        self.notify(f"타일 처리 중 · 완료 {self.successful_tile_count}개 · 초기 {self.initial_tile_count}개 · depth={tile.depth}")
+
+    def _progress(self, *, request_count: int | None = None, force: bool = False) -> None:
+        count = self.request_count if request_count is None else request_count
+        now = monotonic()
+        if not force and now - self._last_progress_time < 5 and count - self._last_progress_request < 25:
+            return
+        self.notify(f"수집 진행 · API 요청 {count}/{self.request_budget}회 · 완료 타일 {self.successful_tile_count}개 · 초기 {self.initial_tile_count}개")
+        self._last_progress_time = now
+        self._last_progress_request = count
 
     def finish_tile(self) -> None:
         self.successful_tile_count += 1
         self.active_tile = None
-        self.notify(f"타일 완료 {self.successful_tile_count}개 · 실제 API 요청 {self.request_count}회")
+        self._progress()
 
     def reserve_requests(self, count: int) -> None:
         """Reserve newly planned work, not retries, within the layer's hard cap."""
@@ -83,13 +97,15 @@ class FetchContext:
             self.notify(f"추가 조회 작업 반영 · 레이어 요청 예산 {expanded}회 · 안전 상한 {self.request_budget_maximum}회")
 
     def before_request(self) -> None:
+        if self.check_cancelled is not None:
+            self.check_cancelled()
         if self.request_count >= self.request_budget:
             self.capture_failure()
             raise ProviderError(
                 f"{self.provider} 레이어 요청 예산을 초과했습니다: budget={self.request_budget} "
                 f"(실제 요청 {self.request_count}회, 완료 타일 {self.successful_tile_count}개)"
             )
-        self.notify(f"API 요청 {self.request_count + 1}/{self.request_budget}회 · 완료 타일 {self.successful_tile_count}개")
+        self._progress(request_count=self.request_count + 1)
         self.request_count += 1
 
     def capture_failure(self) -> None:
@@ -97,6 +113,7 @@ class FetchContext:
             self.failed_tile_bbox = self.active_tile.output_bounds
 
     def success_result(self, layer: SpatialLayer) -> DownloadResult:
+        self._progress(force=True)
         return DownloadResult(
             layer_id=layer.name,
             status="success",
@@ -109,6 +126,7 @@ class FetchContext:
 
     def failed_result(self, layer_id: str, error: str) -> DownloadResult:
         self.capture_failure()
+        self._progress(force=True)
         return DownloadResult(
             layer_id=layer_id,
             status="failed",
