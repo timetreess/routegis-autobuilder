@@ -6,6 +6,8 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-19
+
 ### Added
 
 - Generate a self-contained `<project>.html` alongside QGZ/GeoPackage/Shapefile output. Embed Leaflet 1.9.4 (BSD-2-Clause), CSS, images, styles, vector data and notices; viewing requires neither QGIS, qgis2web, a CDN nor companion project files.
@@ -17,6 +19,7 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 - Accept the Ecology service's observed `kr.nie-ecobank` feature namespace alongside `http://openapi.nie.re.kr`, while preserving strict feature, property, geometry and CRS validation.
 - Retry VWorld HTTP-200 XML/JSON connection-pool timeout errors and honor bounded numeric `Retry-After` delays. Subdivide only the overloaded WFS/Overpass/Ecology tile after transient failures; retain completed tiles, deduplicate features and keep failures atomic. Bound outage subdivision to depth 4 in addition to existing size/depth/request limits.
 - Reuse the successfully subdivided power-query plan and byte-bounded responses for the companion power layer; do not repeat failed parent queries or reuse incomplete downloads.
+- Leave the standalone QGIS smoke process without finalizing CPython. Finalization destroyed QGIS objects after `exitQgis()` and faulted in `Qt5Core.dll`; QGIS Desktop is unaffected because it never finalizes embedded Python. The smoke also reports each section so a failure shows where it stopped.
 
 ### Changed
 
