@@ -52,6 +52,16 @@ Also run the upgrade check using an extracted, previously installed plugin. It l
 
 Keep the older installation unchanged for this check; rebuilding an old version number from current sources does not reproduce an actual upgrade.
 
+The process must exit with code 0. `python-qgis.bat` finalizes the interpreter on the
+way out, unlike QGIS Desktop, which never imports `Py_Finalize`. CPython then
+destroys QGIS objects that are still reachable through reference cycles, which
+happens after `QgsApplication.exitQgis()` has already torn the runtime down and
+faults with `0xC0000005` in `Qt5Core.dll`. Keeping a second `QgsProject` or a
+`QgsMapCanvas` alive reproduces it in 3 out of 3 runs; releasing the same objects
+before exiting does not. The smoke therefore leaves through `os._exit()` after its
+assertions, and prints a `stage:` line per section so a failing run shows where it
+stopped.
+
 ## Publish a GitHub Release
 
 ### Standalone HTML browser smoke check

@@ -1127,6 +1127,11 @@ def _assert_empty_result_group_labels(project_root: Path, temporary_root: Path) 
         assert not root.findGroup("06_행정구역").children()
 
 
+def _stage(name: str) -> None:
+    """Report progress so a crashing manual run shows the failing stage."""
+    print(f"stage: {name}", flush=True)
+
+
 def _load_plugin(interface, plugin_directory, temporary_root, previous_plugin_directory):
     from qgis import utils
 
@@ -1218,18 +1223,22 @@ def run(project_root: Path, plugin_directory: Path, previous_plugin_directory: P
 
             assert len(interface.toolbar_actions) == len(interface.menu_actions) == 1
             assert not plugin.action.icon().isNull()
+            _stage("open wizard")
             plugin.run()
             application.processEvents()
             wizard = plugin.wizard
             assert wizard is not None and wizard.isVisible()
             _assert_wizard_catalog(wizard)
             _assert_wizard_crs_choices(wizard)
+            _stage("cad preview")
             _assert_cad_preview(wizard_module, interface, temporary_root)
+            _stage("responsive analysis (80 km DXF)")
             _assert_responsive_analysis(wizard_module, interface, temporary_root)
 
             _configure_fixture_build(wizard, project_root, temporary_root / "output")
             from inspect import signature
             print(f"Loaded core: {core.__version__}, build{signature(type(wizard.service).build)}")
+            _stage("project build")
             _click_build(wizard, wizard_module)
             assert core.__version__ == EXPECTED_VERSION
             assert type(wizard.service).__module__ == f"{CORE_PACKAGE}.app.project_service"
@@ -1242,14 +1251,22 @@ def run(project_root: Path, plugin_directory: Path, previous_plugin_directory: P
             assert wizard.web_map_button.isEnabled()
             assert str(wizard.result.web_map_html) in wizard.progress.toPlainText()
             _assert_no_placeholder_leak(wizard.result)
+            _stage("loaded project assertions")
             _assert_loaded_project(QgsProject.instance(), wizard)
+            _stage("layer CRS updates")
             _assert_layer_crs_updates(project_root, temporary_root)
+            _stage("native category edge values")
             _assert_native_category_edge_values(temporary_root)
+            _stage("headless project layout")
             _assert_headless_project_layout(project_root, temporary_root)
+            _stage("empty result group labels")
             _assert_empty_result_group_labels(project_root, temporary_root)
+            _stage("wizard provider requests")
             _assert_wizard_provider_requests(wizard_module, interface, project_root, temporary_root)
+            _stage("responsive build")
             _assert_responsive_build(wizard_module, interface, project_root, temporary_root)
 
+            _stage("reopen and reload")
             wizard.close()
             application.processEvents()
             plugin.run()
@@ -1294,4 +1311,15 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    exit_code = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # CPython's finalization destroys QGIS objects that are still reachable
+    # through reference cycles, which happens after QgsApplication.exitQgis()
+    # has already torn the runtime down; that faults with 0xC0000005 in
+    # Qt5Core.dll. Reproduced in 3/3 runs for a second QgsProject or a
+    # QgsMapCanvas, and absent when the same objects are released beforehand.
+    # QGIS Desktop never imports Py_Finalize, so it never finalizes embedded
+    # Python and cannot hit this; only a standalone python-qgis.bat process can.
+    # Everything asserted above already ran, so leave without finalizing.
+    os._exit(exit_code)
