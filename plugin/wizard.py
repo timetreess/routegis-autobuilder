@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from time import monotonic
 
-from qgis.PyQt.QtCore import QSettings, Qt, QTimer
-from qgis.PyQt.QtGui import QTextCursor
+from qgis.PyQt.QtCore import QSettings, Qt, QTimer, QUrl
+from qgis.PyQt.QtGui import QDesktopServices, QTextCursor
 from qgis.PyQt.QtWidgets import (
     QApplication,
     QComboBox,
@@ -288,13 +288,16 @@ class RouteGISWizard(QWizard):
     def _result_page(self) -> QWizardPage:
         page = QWizardPage()
         page.setTitle("4. 프로젝트 생성")
-        page.setSubTitle("선택한 설정으로 공간정보와 QGIS 프로젝트를 생성합니다.")
+        page.setSubTitle("선택한 공간정보로 QGIS 프로젝트와 공유용 단일 HTML 웹 지도를 생성합니다. HTML에는 원본 CAD를 넣지 않습니다.")
         layout = QVBoxLayout(page)
         self.run_button = QPushButton("프로젝트 생성")
         self.run_button.clicked.connect(self._build)
         self.open_button = QPushButton("QGIS에서 열기")
         self.open_button.setEnabled(False)
         self.open_button.clicked.connect(self._open_project)
+        self.web_map_button = QPushButton("HTML 웹 지도 열기")
+        self.web_map_button.setEnabled(False)
+        self.web_map_button.clicked.connect(self._open_web_map)
         self.progress = QTextEdit()
         self.progress.setReadOnly(True)
         self.progress_bar = QProgressBar()
@@ -311,6 +314,7 @@ class RouteGISWizard(QWizard):
         layout.addWidget(self.build_elapsed)
         layout.addWidget(self.progress, 1)
         layout.addWidget(self.open_button)
+        layout.addWidget(self.web_map_button)
         return page
 
     def _choose_output(self):
@@ -763,6 +767,7 @@ class RouteGISWizard(QWizard):
     def _set_build_running(self, running: bool) -> None:
         self.run_button.setEnabled(not running)
         self.open_button.setEnabled(not running and self.result is not None)
+        self.web_map_button.setEnabled(not running and self.result is not None and self.result.web_map_html is not None)
         for page_id in self.pageIds():
             if page_id != self._result_page_id:
                 self.page(page_id).setEnabled(not running)
@@ -933,6 +938,8 @@ class RouteGISWizard(QWizard):
                 f"보고서: {self.result.report_html}",
                 f"로그: {self.result.project_directory / 'logs' / 'app.log'}",
             ])
+            if self.result.web_map_html is not None:
+                lines.append(f"✓ HTML 웹 지도: {self.result.web_map_html}\n  이 HTML 파일 하나만 복사해 브라우저로 열 수 있습니다. 배경지도 선택 시에는 인터넷이 필요합니다.")
             self._append_build_log("\n".join(lines))
             self.build_stage.setText("생성 완료 · QGIS에서 프로젝트 여는 중")
             self._open_project()
@@ -966,6 +973,12 @@ class RouteGISWizard(QWizard):
             return
         self._save_credentials()
         super().reject()
+
+    def _open_web_map(self):
+        if self.result is None or self.result.web_map_html is None:
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.result.web_map_html.resolve()))):
+            QMessageBox.warning(self, "웹 지도 열기 실패", "생성된 HTML 파일을 브라우저에서 직접 열어 주세요.")
 
     def _open_project(self):
         if self.result is None or self.result.project_file is None:

@@ -61,6 +61,7 @@ def _assert_plugin_build(project_root, plugin_parent, package, output_directory)
     assert task.run(), task.error
     assert task.result.project_file.is_file()
     assert task.result.geopackage.is_file()
+    assert task.result.web_map_html.is_file()
     assert task.result.downloads[0].status == "success"
     assert task.progress[0] == 0 and task.progress[-1] == 99
     assert type(service).__module__ == f"{package}.routegis.app.project_service"

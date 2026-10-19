@@ -54,6 +54,21 @@ Keep the older installation unchanged for this check; rebuilding an old version 
 
 ## Publish a GitHub Release
 
+### Standalone HTML browser smoke check
+
+Current development sources also generate a single `<project>.html`. Test it in a
+clean browser context with all networking disabled and with no companion files:
+
+```powershell
+uv run --no-project --with playwright playwright install chromium
+uv run --no-project --with playwright tests/manual/web_map_smoke.py "build/wheel-smoke-output/release-smoke/release-smoke.html"
+```
+
+The check copies only the HTML to a temporary folder and verifies embedded feature
+counts, zoom, pan, layer toggles, popups, disabled failed/empty layers and zero HTTP
+requests. Use `--channel msedge` to check an installed Edge where automation is
+permitted. Background tiles are online-only and are not enabled by this check.
+
 After deciding to publish:
 
 1. Keep the version consistent in `pyproject.toml`, `src/routegis/__init__.py`, `plugin/metadata.txt` and `tests/manual/qgis_smoke.py`; update `CHANGELOG.md` and the plugin changelog.

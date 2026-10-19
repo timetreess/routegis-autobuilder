@@ -840,6 +840,7 @@ def _assert_no_placeholder_leak(result: Any) -> None:
     artifacts = (
         result.manifest,
         result.report_html,
+        result.web_map_html,
         result.project_directory / "reports" / "processing_report.json",
         result.project_directory / "logs" / "app.log",
     )
@@ -1237,6 +1238,9 @@ def run(project_root: Path, plugin_directory: Path, previous_plugin_directory: P
             assert [result.layer_id for result in wizard.result.downloads] == list(DEFAULT_LAYER_IDS)
             assert all(result.status == "success" for result in wizard.result.downloads)
             assert wizard.result.project_file.is_file()
+            assert wizard.result.web_map_html.is_file()
+            assert wizard.web_map_button.isEnabled()
+            assert str(wizard.result.web_map_html) in wizard.progress.toPlainText()
             _assert_no_placeholder_leak(wizard.result)
             _assert_loaded_project(QgsProject.instance(), wizard)
             _assert_layer_crs_updates(project_root, temporary_root)

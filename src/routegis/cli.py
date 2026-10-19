@@ -160,6 +160,7 @@ def _run_build(args: argparse.Namespace) -> int:
                 "project_file": str(result.project_file),
                 "geopackage": str(result.geopackage),
                 "report": str(result.report_html),
+                "web_map": str(result.web_map_html),
             },
             ensure_ascii=False,
             indent=2,

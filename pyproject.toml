@@ -40,7 +40,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-routegis = ["resources/*.yaml", "resources/presets/*.yaml", "resources/styles/*.qml"]
+routegis = ["resources/*.yaml", "resources/presets/*.yaml", "resources/styles/*.qml", "resources/web/*", "resources/web/leaflet/*", "resources/web/leaflet/images/*.png"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

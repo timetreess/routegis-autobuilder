@@ -261,6 +261,23 @@ def test_zero_features_are_reported_as_success_not_download_failure(wizard, tmp_
     assert "모두 실패" not in text
 
 
+def test_result_includes_web_map_path(wizard, tmp_path):
+    wizard.service.build.return_value.web_map_html = tmp_path / "project.html"
+    _handler("_build", PLUGIN_DOTENV=tmp_path / ".env")(wizard)
+    wizard._finish_build(None, wizard.service.build.return_value)
+    text = wizard._append_build_log.call_args.args[0]
+    assert "HTML" in text and str(tmp_path / "project.html") in text
+
+
+def test_web_map_button_opens_local_html_in_default_browser(wizard, tmp_path):
+    wizard.result = wizard.service.build.return_value
+    wizard.result.web_map_html = tmp_path / "project map.html"
+    desktop, url = Mock(), Mock()
+    _handler("_open_web_map", QDesktopServices=desktop, QUrl=url)(wizard)
+    url.fromLocalFile.assert_called_once_with(str(wizard.result.web_map_html.resolve()))
+    desktop.openUrl.assert_called_once_with(url.fromLocalFile.return_value)
+
+
 def test_build_does_not_execute_pipeline_on_the_ui_thread(wizard, tmp_path):
     _handler("_build", PLUGIN_DOTENV=tmp_path / ".env")(wizard)
 

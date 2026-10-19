@@ -138,3 +138,4 @@ class PipelineResult:
     manifest: Path | None = None
     downloads: list[DownloadResult] = field(default_factory=list)
     issues: list[ValidationIssue] = field(default_factory=list)
+    web_map_html: Path | None = None

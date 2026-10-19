@@ -52,6 +52,7 @@ from ..providers import EcologyClient, LayerCatalog, OverpassClient, SpatialData
 from ..qgis.project import write_qgis_project
 from ..report import GEOMETRY_POLICY, write_reports
 from ..security import redact_sensitive_text
+from ..web_map import write_web_map
 
 
 def _redact(message: str | None, *secrets: str) -> str | None:
@@ -491,7 +492,7 @@ class ProjectService:
             raise
 
         result.project_directory = project_directory
-        for attribute in ("project_file", "geopackage", "report_html", "manifest"):
+        for attribute in ("project_file", "geopackage", "report_html", "manifest", "web_map_html"):
             path = getattr(result, attribute)
             if path is not None:
                 setattr(result, attribute, project_directory / path.relative_to(staging))
@@ -757,6 +758,13 @@ class ProjectService:
             layer_metadata=layer_metadata,
             use_native=use_native_project,
         )
+        report(90, "단일 HTML 웹 지도 생성 중 · 원본 CAD 제외")
+        web_map_html = write_web_map(
+            project_file.with_suffix(".html"), config.project_name, layers,
+            layer_metadata={definition.id: _artifact_metadata(definition) for definition in definitions},
+            downloads=downloads, secrets=secrets,
+            on_progress=lambda percent, message: report(90 + 4 * percent // 100, message),
+        )
         state = (
             PipelineState.COMPLETED_WITH_WARNINGS
             if any(issue.severity == "warning" for issue in issues)
@@ -793,6 +801,7 @@ class ProjectService:
                 "geopackage": "data/project.gpkg",
                 "project": project_file.name,
                 "report": "reports/processing_report.html",
+                "web_map": web_map_html.name,
             },
         }
         manifest = project_directory / "project_manifest.json"
@@ -808,7 +817,7 @@ class ProjectService:
             "geometry_policy": GEOMETRY_POLICY,
             "layers": manifest_payload["layers"],
             "issues": [asdict(issue) for issue in issues],
-            "outputs": ["project.gpkg", project_file.name, "project_manifest.json"],
+            "outputs": ["project.gpkg", project_file.name, web_map_html.name, "project_manifest.json"],
         }
         report_html, _ = write_reports(project_directory / "reports", report_payload)
         log.info("프로젝트 생성 상태: %s", state.value)
@@ -822,4 +831,5 @@ class ProjectService:
             manifest=manifest,
             downloads=downloads,
             issues=issues,
+            web_map_html=web_map_html,
         )

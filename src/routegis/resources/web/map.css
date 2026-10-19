@@ -1,0 +1,20 @@
+html, body { height: 100%; margin: 0; }
+body { display: flex; color: #203039; background: #eef2f4; font: 14px/1.5 "Malgun Gothic", sans-serif; }
+aside { width: 310px; flex-shrink: 0; padding: 20px; box-sizing: border-box; overflow-y: auto; background: #fff; border-right: 1px solid #d4dee3; }
+header small { color: #607583; } h1 { font-size: 22px; margin: 6px 0 16px; overflow-wrap: anywhere; }
+h2 { font-size: 16px; margin-top: 22px; } h3 { font-size: 13px; color: #607583; margin: 16px 0 4px; }
+button, select { font: inherit; border: 1px solid #b7c7d1; border-radius: 5px; padding: 8px; background: #fff; }
+button { cursor: pointer; width: 100%; margin-bottom: 14px; background: #edf4f8; } select { width: 100%; }
+.hint, details { font-size: 12px; color: #607583; } .layer-row { padding: 8px 0; border-bottom: 1px solid #edf1f3; }
+.layer-row label { cursor: pointer; display: flex; gap: 7px; align-items: flex-start; }
+.layer-row input { margin-top: 4px; } .layer-row .count { margin-left: auto; color: #607583; white-space: nowrap; }
+.swatch { width: 12px; height: 12px; margin-top: 4px; border: 1px solid #607583; flex-shrink: 0; }
+.error { color: #a32929; overflow-wrap: anywhere; } .layer-row details { margin: 4px 0 0 24px; }
+pre { font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+main { position: relative; flex: 1; min-width: 0; } #map { height: 100%; width: 100%; background-color: #f1f5f7; background-image: linear-gradient(#dce5ea 1px, transparent 1px), linear-gradient(90deg, #dce5ea 1px, transparent 1px); background-size: 40px 40px; }
+#load-status { position: absolute; z-index: 1000; left: 12px; bottom: 30px; padding: 8px 12px; max-width: calc(100% - 48px); border-radius: 5px; background: #fffffff2; box-shadow: 0 1px 6px #20303933; font-size: 12px; }
+#load-status[data-state="failed"] { color: #a32929; } progress { display: block; width: 100%; margin-top: 5px; height: 8px; }
+.popup-content { max-height: 280px; overflow: auto; min-width: 180px; } .popup-content table { border-collapse: collapse; width: 100%; }
+.popup-content th, .popup-content td { padding: 4px 6px; border-bottom: 1px solid #dce5ea; text-align: left; overflow-wrap: anywhere; max-width: 240px; }
+.popup-content th { color: #607583; } .leaflet-container { font-family: "Malgun Gothic", sans-serif; }
+@media (max-width: 650px) { body { flex-direction: column; } aside { width: 100%; height: 36%; border-right: 0; border-bottom: 1px solid #d4dee3; padding: 12px; } main { height: 64%; } h1 { font-size: 18px; margin-bottom: 8px; } }
