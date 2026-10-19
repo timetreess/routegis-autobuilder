@@ -475,6 +475,62 @@ def test_wfs_reported_total_also_replaces_the_saturated_parent():
     assert result.successful_tile_count == 2
 
 
+@pytest.mark.parametrize("maximum,expected_status", [(5000, "success"), (110, "failed")])
+def test_dense_wfs_uses_reported_density_and_extends_estimate_but_keeps_hard_cap(maximum, expected_status):
+    definition = replace(DEFINITION, request_crs="EPSG:5186", response_crs="EPSG:5186")
+    features = [
+        _polygon_feature(f"parcel-{x}-{y}", (x * 100 + 40, y * 100 + 40, x * 100 + 60, y * 100 + 60))
+        for x in range(16) for y in range(16)
+    ]
+    calls, events = [], []
+
+    def handler(request):
+        bounds = tuple(map(float, request.url.params["bbox"].split(",")))
+        calls.append(bounds)
+        left, bottom, right, top = bounds
+        matches = [f for f in features
+                   if left < f["geometry"]["coordinates"][0][0][0] < right
+                   and bottom < f["geometry"]["coordinates"][0][0][1] < top]
+        return httpx.Response(200, json={"type": "FeatureCollection",
+                              "numberMatched": len(matches), "features": matches[:4]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = VWorldClient("secret-key", page_size=4, retries=0,
+                              request_budget_maximum=maximum, client=http_client,
+                              on_progress=events.append).fetch_layer(definition, _aoi((0, 0, 1600, 1600)))
+
+    assert result.status == expected_status, result.error
+    assert result.request_count == len(calls)
+    assert result.initial_tile_count == 1
+    if expected_status == "success":
+        assert result.feature_count == 256
+        # Skip intermediate saturated queries: binary-only traversal needs 255.
+        assert 100 < result.request_count <= 209
+        assert result.successful_tile_count == 128
+        assert any("예산" in event and "5000" in event for event in events)
+    else:
+        assert result.request_count == 110
+        assert result.layer is None and result.feature_count == 0
+        assert "110" in result.error and result.failed_tile_bbox is not None
+
+
+def test_data_pagination_can_extend_initial_estimate_without_raising_server_page_size():
+    definition = replace(DATA_DEFINITION, request_crs="EPSG:5186", response_crs="EPSG:5186")
+
+    def handler(request):
+        page = int(request.url.params["page"])
+        assert request.url.params["size"] == "1"
+        features = [_polygon_feature(f"parcel-{page}", (10, 10, 20, 20))] if page <= 101 else []
+        return httpx.Response(200, json={"type": "FeatureCollection", "features": features})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = VWorldClient("secret-key", page_size=1, retries=0,
+                              client=http_client).fetch_layer(definition, _aoi((0, 0, 100, 100)))
+    assert result.status == "success", result.error
+    assert result.feature_count == 101
+    assert result.request_count == 102
+
+
 @pytest.mark.parametrize(
     "planner_limits",
     [
@@ -756,6 +812,42 @@ def test_invalid_wfs_polygon_is_repaired_before_validation():
     assert result.layer.features[0].geometry.is_valid
     assert "Polygon" in result.layer.features[0].geometry.geom_type
     assert result.layer.features[0].properties["pnu"] == "4691034023200440002"
+
+
+def test_invalid_source_polygon_with_collapsed_spike_keeps_all_polygon_area_and_logs_repair():
+    definition = replace(DEFINITION, request_crs="EPSG:5186", response_crs="EPSG:5186")
+    feature = _polygon_feature("spiked-parcel", (10, 10, 20, 20), name="original")
+    # The spike travels out and back on the same edge, enclosing zero area.
+    feature["geometry"]["coordinates"] = [
+        [[10, 10], [20, 10], [20, 20], [15, 20], [15, 25], [15, 20], [10, 20], [10, 10]],
+    ]
+    events = []
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(
+        200, json={"type": "FeatureCollection", "features": [feature]},
+    ))) as http_client:
+        result = VWorldClient("secret-key", retries=0, client=http_client,
+                              on_progress=events.append).fetch_layer(definition, _aoi((0, 0, 100, 100)))
+    assert result.status == "success", result.error
+    assert result.feature_count == 1
+    repaired = result.layer.features[0]
+    assert repaired.geometry.is_valid and repaired.geometry.equals(box(10, 10, 20, 20))
+    assert repaired.geometry.area == 100
+    assert repaired.properties == {"name": "original"}
+    assert any("spiked-parcel" in event and "복구" in event for event in events)
+
+
+def test_completely_collapsed_source_polygon_still_fails_atomically():
+    definition = replace(DEFINITION, request_crs="EPSG:5186", response_crs="EPSG:5186")
+    feature = _polygon_feature("no-area", (10, 10, 20, 20))
+    feature["geometry"]["coordinates"] = [[[10, 10], [20, 10], [30, 10], [10, 10]]]
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(
+        200, json={"type": "FeatureCollection", "features": [feature]},
+    ))) as http_client:
+        result = VWorldClient("secret-key", retries=0, client=http_client).fetch_layer(
+            definition, _aoi((0, 0, 100, 100)),
+        )
+    assert result.status == "failed" and result.layer is None
+    assert result.feature_count == 0
 
 
 def test_wfs_keeps_complete_source_geometry_and_only_filters_non_intersections():

@@ -6,7 +6,7 @@ import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from math import isfinite
+from math import ceil, isfinite, log2
 from typing import Any
 from xml.etree import ElementTree as ET
 
@@ -533,6 +533,13 @@ class VWorldClient:
                 elif candidate.geom_type in {f"Multi{expected}", "GeometryCollection"}:
                     for child in candidate.geoms:
                         collect(child)
+                elif expected == "Polygon" and not geometry.is_valid and candidate.geom_type in {
+                    "LineString", "MultiLineString", "Point", "MultiPoint",
+                }:
+                    # make_valid can collapse invalid polygon spikes to zero-area
+                    # lines/points. Retain every area-bearing polygon, not those
+                    # artifacts. Original non-polygon inputs remain rejected above.
+                    return
                 else:
                     incompatible_parts.append(candidate.geom_type)
 
@@ -566,6 +573,7 @@ class VWorldClient:
         self,
         features: list[Any],
         definition: LayerDefinition,
+        context: FetchContext,
     ) -> None:
         malformed_count = 0
         for feature in features:
@@ -580,6 +588,9 @@ class VWorldClient:
             except (TypeError, ValueError, ShapelyError) as exc:
                 raise ProviderError(f"VWorld Geometry를 읽을 수 없습니다: {definition.name}") from exc
             self._repair_geometry(geometry, definition.geometry_type)
+            if not geometry.is_valid:
+                context.notify(f"원본 도형 오류 복구 · 객체 {feature.get('id', '(ID 없음)')} · "
+                               "요청 도형 유형의 모든 요소 보존 (면 도형의 면적 0 축퇴 선·점은 제외)")
         if malformed_count:
             raise ProviderError(f"VWorld 응답에 Geometry가 없는 객체가 {malformed_count}개 있습니다.")
 
@@ -642,17 +653,26 @@ class VWorldClient:
             )
             if saturated:
                 children = planner.split(tile)
+                # A reported total predicts the required resolution. Skip up to
+                # four levels of predicted saturated intermediate queries;
+                # uneven density is still checked in every resulting child.
+                levels = min(4, ceil(log2(max(2, (reported_total or 0) / limit))))
+                for _ in range(1, levels):
+                    children = [descendant for child in children
+                                for descendant in (planner.split(child) or [child])]
                 if not children:
                     raise ProviderError(
                         f"VWorld WFS 밀집 영역을 더 나눌 수 없습니다: "
                         f"layer={definition.id}, bbox={tile.output_bounds}, depth={tile.depth}, "
                         f"returned={len(features)}, total={reported_total}"
                     )
+                context.notify(f"WFS 응답 포화 · 수신 {len(features)}개 · 전체 {reported_total}개 · {len(children)}개 구간으로 분할")
+                context.reserve_requests(len(children) * (self._retries + 1))
                 pending.extend(children)
                 context.active_tile = None
                 continue
 
-            self._validate_raw_feature_geometries(features, definition)
+            self._validate_raw_feature_geometries(features, definition, context)
             self._merge_raw_features(
                 raw_features,
                 features,
@@ -696,10 +716,11 @@ class VWorldClient:
                 if page_fingerprint == previous_fingerprint:
                     raise ProviderError("VWorld Pagination이 같은 페이지를 반복했습니다.")
                 previous_fingerprint = page_fingerprint
-                self._validate_raw_feature_geometries(features, definition)
+                self._validate_raw_feature_geometries(features, definition, context)
                 self._merge_raw_features(raw_features, features, seen_ids=seen_ids)
                 if len(features) < self._page_size:
                     break
+                context.reserve_requests(self._retries + 1)
                 page += 1
             context.finish_tile()
         return raw_features, response_crs
@@ -738,6 +759,7 @@ class VWorldClient:
                     self._request_budget_maximum,
                 ),
                 on_progress=self._on_progress,
+                request_budget_maximum=self._request_budget_maximum,
             )
             if not initial_tiles:
                 raise ProviderError("VWorld 조회 타일을 만들 수 없습니다.")

@@ -244,8 +244,12 @@ class EcologyClient:
         supplied_name = geometry.attrib.get("srsName", "").strip()
         if not supplied_name:
             raise ProviderError("Ecology Geometry 좌표계(srsName)가 없습니다.")
+        # The live service uses the GML 2 EPSG URL, which PROJ does not parse.
+        # Canonicalize only the official identifier, without fetching the URL.
+        legacy_epsg = re.fullmatch(r"https?://www\.opengis\.net/gml/srs/epsg\.xml#([0-9]+)", supplied_name)
+        supplied_crs = f"EPSG:{legacy_epsg.group(1)}" if legacy_epsg else supplied_name
         try:
-            supplied = normalize_crs(supplied_name)
+            supplied = normalize_crs(supplied_crs)
             normalized_expected = normalize_crs(expected)
         except CrsError as exc:
             raise ProviderError(
@@ -482,6 +486,10 @@ class EcologyClient:
             if child is geometry_property:
                 continue
             property_namespace, property_name = self._qualified_name(child.tag)
+            if (property_namespace, property_name) == (GML_NAMESPACE, "boundedBy"):
+                # GeoServer includes this optional GML feature envelope. It is
+                # metadata, not a dataset attribute or the authoritative geom.
+                continue
             if property_namespace != actual_namespace or list(child):
                 raise ProviderError(
                     f"Ecology Feature 속성 형식이 올바르지 않습니다: {property_name}"
@@ -570,7 +578,8 @@ class EcologyClient:
         return unary_union(geometries)
 
     def fetch_layer(self, definition: LayerDefinition, aoi: SpatialLayer) -> DownloadResult:
-        context = FetchContext("Ecology", on_progress=self._on_progress)
+        context = FetchContext("Ecology", on_progress=self._on_progress,
+                               request_budget_maximum=self._request_budget_maximum)
         try:
             planner = AoiTilePlanner(
                 aoi,
@@ -615,6 +624,8 @@ class EcologyClient:
                             f"layer={definition.id}, bbox={tile.output_bounds}, "
                             f"depth={tile.depth}, returned={member_count}"
                         )
+                    context.notify(f"WFS 응답 포화 · 수신 {member_count}개 · {len(children)}개 구간으로 분할")
+                    context.reserve_requests(len(children) * (self._retries + 1))
                     pending.extend(children)
                     context.active_tile = None
                     continue

@@ -58,6 +58,7 @@ class FetchContext:
     active_tile: AoiTile | None = None
     failed_tile_bbox: tuple[float, float, float, float] | None = None
     on_progress: Callable[[str], None] | None = None
+    request_budget_maximum: int | None = None
 
     def notify(self, message: str) -> None:
         if self.on_progress is not None:
@@ -72,11 +73,21 @@ class FetchContext:
         self.active_tile = None
         self.notify(f"타일 완료 {self.successful_tile_count}개 · 실제 API 요청 {self.request_count}회")
 
+    def reserve_requests(self, count: int) -> None:
+        """Reserve newly planned work, not retries, within the layer's hard cap."""
+        if self.request_budget_maximum is None:
+            return
+        expanded = min(self.request_budget_maximum, self.request_budget + count)
+        if expanded > self.request_budget:
+            self.request_budget = expanded
+            self.notify(f"추가 조회 작업 반영 · 레이어 요청 예산 {expanded}회 · 안전 상한 {self.request_budget_maximum}회")
+
     def before_request(self) -> None:
         if self.request_count >= self.request_budget:
             self.capture_failure()
             raise ProviderError(
-                f"{self.provider} 레이어 요청 예산을 초과했습니다: budget={self.request_budget}"
+                f"{self.provider} 레이어 요청 예산을 초과했습니다: budget={self.request_budget} "
+                f"(실제 요청 {self.request_count}회, 완료 타일 {self.successful_tile_count}개)"
             )
         self.notify(f"API 요청 {self.request_count + 1}/{self.request_budget}회 · 완료 타일 {self.successful_tile_count}개")
         self.request_count += 1

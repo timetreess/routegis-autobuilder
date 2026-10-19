@@ -6,6 +6,13 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ## [Unreleased]
 
+### Fixed
+
+- Let successful VWorld WFS/Ecology saturation responses and VWorld Data API pagination reserve additional requests beyond the initial tile-based estimate, while retaining the per-layer absolute cap, counted retries and atomic failure semantics. Keep outage-only retries bounded by the existing estimate and recovery limits.
+- Use VWorld's reported match count to skip up to four levels of saturated intermediate WFS queries, without exceeding the server's 1,000-feature request limit or changing geometry validation and deduplication.
+- Accept the Ecology service's official GML 2 EPSG URL identifiers and optional per-feature `gml:boundedBy` metadata. Keep mismatched/unknown CRS identifiers, foreign properties and malformed authoritative geometry rejected.
+- Recover invalid VWorld source polygons whose spikes collapse to zero-area lines/points during `make_valid`, preserving every polygon component and logging repaired feature IDs. Still reject wrong-family source geometry and wholly collapsed polygons.
+
 ## [0.3.0] - 2026-10-19
 
 ### Added

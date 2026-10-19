@@ -220,6 +220,26 @@ def test_ecobank_namespace_from_live_service_keeps_geometry_and_properties():
     assert result.layer.features[0].properties == SCALAR_PROPERTIES
 
 
+@pytest.mark.parametrize("namespace,expected_status", [
+    (GML_NAMESPACE, "success"), ("https://foreign.example/gml", "failed"),
+])
+def test_live_gml_feature_bounds_are_metadata_not_scalar_attributes(namespace, expected_status):
+    bounds = (f'<metadata:boundedBy xmlns:metadata="{namespace}">'
+              '<gml:Box srsName="http://www.opengis.net/gml/srs/epsg.xml#5186">'
+              '<gml:coordinates>200010,500010 200090,500090</gml:coordinates>'
+              '</gml:Box></metadata:boundedBy>')
+    feature = _feature_xml(feature_namespace="kr.nie-ecobank").replace(
+        "<open:geom>", f"{bounds}<open:geom>", 1,
+    ).replace('srsName="EPSG:5186"', 'srsName="http://www.opengis.net/gml/srs/epsg.xml#5186"')
+    result = _fetch_xml(_collection_xml(feature))
+    assert result.status == expected_status, result.error
+    if expected_status == "success":
+        assert result.feature_count == 1
+        assert result.layer.features[0].properties == SCALAR_PROPERTIES
+    else:
+        assert result.layer is None
+
+
 def _fetch_xml(
     content: bytes,
     *,
@@ -909,16 +929,36 @@ def test_missing_mismatched_or_unknown_geometry_crs_fails_atomically(
     assert "좌표계" in (result.error or "")
 
 
-def test_equivalent_crs_urn_is_normalized_before_comparison():
+@pytest.mark.parametrize("srs_name", [
+    "urn:ogc:def:crs:EPSG::5186",
+    "http://www.opengis.net/gml/srs/epsg.xml#5186",
+    "https://www.opengis.net/gml/srs/epsg.xml#5186",
+])
+def test_equivalent_crs_urn_and_gml2_url_are_normalized_before_comparison(srs_name):
     geometry = _multi_polygon_xml(
         [_polygon_xml("200010,500010 200090,500010 200090,500090 200010,500010")],
-        srs_name="urn:ogc:def:crs:EPSG::5186",
+        srs_name=srs_name,
     )
 
     result = _fetch_xml(_collection_xml(_feature_xml(geometry_xml=geometry)))
 
     assert result.status == "success"
     assert result.feature_count == 1
+
+
+@pytest.mark.parametrize("srs_name", [
+    "http://www.opengis.net/gml/srs/epsg.xml#4326",
+    "http://foreign.example/gml/srs/epsg.xml#5186",
+    "http://www.opengis.net/gml/srs/epsg.xml#5186?other=4326",
+])
+def test_gml2_crs_url_does_not_bypass_mismatch_or_unknown_crs_checks(srs_name):
+    geometry = _multi_polygon_xml(
+        [_polygon_xml("200010,500010 200090,500010 200090,500090 200010,500010")],
+        srs_name=srs_name,
+    )
+    result = _fetch_xml(_collection_xml(_feature_xml(geometry_xml=geometry)))
+    _assert_atomic_failure(result)
+    assert "좌표계" in result.error
 
 
 def test_feature_collection_requires_the_wfs_namespace_uri():
@@ -1289,6 +1329,27 @@ def test_request_budget_is_layer_global_and_counts_only_real_attempts():
     assert result.failed_tile_count == 1
     assert result.failed_tile_bbox == (200050.0, 500000.0, 200100.0, 500100.0)
     assert "budget=2" in (result.error or "")
+
+
+def test_dense_ecology_layer_can_finish_beyond_the_initial_request_estimate():
+    features = [(x * 100 + 40, y * 100 + 40, f"tbl_opn_eczm.{x}.{y}")
+                for x in range(8) for y in range(8)]
+
+    def handler(request):
+        left, bottom, right, top = map(float, request.url.params["bbox"].split(","))
+        matches = [_feature_in_bounds(fid, (x, y, x + 10, y + 10))
+                   for x, y, fid in features if left < x < right and bottom < y < top]
+        return httpx.Response(200, content=_collection_xml(*matches[:2]))
+
+    definition = replace(DEFINITION, request_crs="EPSG:5186", response_crs="EPSG:5186")
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = EcologyClient(SERVICE_KEY, page_size=2, retries=0, client=http_client).fetch_layer(
+            definition, _aoi((0, 0, 800, 800)),
+        )
+    assert result.status == "success", result.error
+    assert result.initial_tile_count == 1
+    assert result.request_count == 127
+    assert result.feature_count == result.successful_tile_count == 64
 
 
 def test_retry_cannot_exceed_the_single_layer_request_budget():
