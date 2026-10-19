@@ -75,9 +75,11 @@ uv run --no-project --with playwright tests/manual/web_map_smoke.py "build/wheel
 ```
 
 The check copies only the HTML to a temporary folder and verifies embedded feature
-counts, zoom, pan, layer toggles, popups, disabled failed/empty layers and zero HTTP
-requests. Use `--channel msedge` to check an installed Edge where automation is
-permitted. Background tiles are online-only and are not enabled by this check.
+counts, zoom, pan, layer toggles, popups and disabled failed/empty layers. The map
+opens on the VWorld general map, so the check first confirms those requests go to
+`xdworld.vworld.kr`, then switches the basemap off and requires that the embedded
+data still works with zero further HTTP requests. Use `--channel msedge` to check an
+installed Edge where automation is permitted.
 
 After deciding to publish:
 

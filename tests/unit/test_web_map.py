@@ -65,6 +65,7 @@ def test_standalone_map_embeds_data_and_viewer_without_original_cad(tmp_path, la
     assert parsed.external_assets == []
     assert "url(images/" not in text and "sourceMappingURL=" not in text
     assert "data:image/png;base64," in text
+    assert '<option value="street" selected>' in text
     assert "Leaflet" in text and "Redistribution and use" in text
     assert {item["id"] for item in parsed.config["layers"]} == {"linework", "route_buffer", "land_ownership"}
     assert "secret_raw_cad" not in text

@@ -12,6 +12,7 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 - Generate a self-contained `<project>.html` alongside QGZ/GeoPackage/Shapefile output. Embed Leaflet 1.9.4 (BSD-2-Clause), CSS, images, styles, vector data and notices; viewing requires neither QGIS, qgis2web, a CDN nor companion project files.
 - Include derived linework, the analysis buffer and selected successful spatial layers, but exclude raw/source CAD. Support zoom/pan, layer controls, batched Canvas rendering, property popups and source/license metadata. Distinguish failed and empty layers, preserve geometry, and keep optional VWorld backgrounds online-only.
+- Open generated web maps on the VWorld general map by default, with satellite and offline (no basemap) options still selectable.
 - Expose the web map in Wizard results and an HTML-open button, CLI output and Manifest/report outputs. Keep export cancellable and atomic with the existing project publication flow.
 
 ### Fixed

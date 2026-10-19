@@ -96,23 +96,28 @@ for (const entry of config.layers) {
 }
 
 let background = null;
-document.getElementById("basemap").addEventListener("change", event => {
+const basemapSelect = document.getElementById("basemap");
+const basemapNotice = document.getElementById("basemap-status");
+
+function applyBasemap(name) {
     if (background) map.removeLayer(background);
     background = null;
-    const notice = document.getElementById("basemap-status");
-    notice.textContent = "";
-    if (event.target.value === "none") return;
-    const urls = event.target.value === "hybrid" ? [
+    basemapNotice.textContent = "";
+    if (name === "none") return;
+    const urls = name === "hybrid" ? [
         "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg",
         "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
     ] : ["https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"];
     const tiles = urls.map((url, index) => {
         const layer = L.tileLayer(url, {maxZoom: 18, zIndex: index, attribution: "VWorld / 국토교통부"});
-        layer.on("tileerror", () => { notice.textContent = "배경지도 연결 실패 · 인터넷/지도 서비스 이용 조건을 확인하세요. 내장 공간정보는 계속 볼 수 있습니다."; });
+        layer.on("tileerror", () => { basemapNotice.textContent = "배경지도 연결 실패 · 인터넷/지도 서비스 이용 조건을 확인하세요. 내장 공간정보는 계속 볼 수 있고, ‘배경지도 없음’을 선택하면 오프라인으로 볼 수 있습니다."; });
         return layer;
     });
     background = L.layerGroup(tiles).addTo(map);
-});
+}
+
+basemapSelect.addEventListener("change", event => applyBasemap(event.target.value));
+applyBasemap(basemapSelect.value);
 
 async function loadLayers() {
     const entries = config.layers.filter(item => item.data).sort((a, b) => a.order - b.order);

@@ -13,11 +13,11 @@
     <button id="fit-map" type="button">사업구간 전체 보기</button>
     <label for="basemap">배경지도</label>
     <select id="basemap">
-      <option value="none">배경지도 없음 · 오프라인</option>
-      <option value="street">VWorld 일반지도 · 온라인</option>
+      <option value="street" selected>VWorld 일반지도 · 온라인</option>
       <option value="hybrid">VWorld 위성 + 지명 · 온라인</option>
+      <option value="none">배경지도 없음 · 오프라인</option>
     </select>
-    <p class="hint">확대·축소: 휠 / 이동: 드래그 / 속성: 객체 클릭<br>공간정보는 내장되어 있습니다. 배경지도만 인터넷을 사용합니다.</p>
+    <p class="hint">확대·축소: 휠 / 이동: 드래그 / 속성: 객체 클릭<br>공간정보는 내장되어 있습니다. 배경지지는 기본으로 VWorld를 사용하며, <strong>배경지도 없음</strong>을 선택하면 인터넷 없이도 볼 수 있습니다.</p>
     <p id="basemap-status" role="status"></p>
     <h2>공간정보 레이어</h2>
     <div id="layers"></div>

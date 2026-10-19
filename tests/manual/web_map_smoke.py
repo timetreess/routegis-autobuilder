@@ -28,7 +28,13 @@ def main():
         page.on("request", lambda request: requests.append(request.url) if request.url.startswith(("http:", "https:")) else None)
         page.goto(html.as_uri())
         page.wait_for_selector('#load-status[data-state="ready"]', timeout=120000)
-        assert page.locator("#basemap").input_value() == "none"
+        # The map opens on the VWorld general map; turning it off must leave it offline.
+        assert page.locator("#basemap").input_value() == "street"
+        page.wait_for_timeout(500)
+        assert requests and all(url.startswith("https://xdworld.vworld.kr/2d/Base/") for url in requests), requests
+        page.select_option("#basemap", "none")
+        page.wait_for_timeout(500)
+        baseline = len(requests)
         assert page.evaluate("config.layers.filter(item => item.data).every(item => overlays.get(item.id).getLayers().length === item.count)")
         entry = page.evaluate("config.layers.find(item => item.data && item.count)")
         assert entry, "Smoke input must contain at least one feature"
@@ -65,7 +71,7 @@ def main():
         assert page.evaluate("typeof window.pwned") == "undefined"
         assert all(page.locator('input[data-layer="' + item["id"] + '"]').is_disabled()
                    for item in page.evaluate("config.layers.filter(item => item.status !== 'success' || !item.count)"))
-        assert not requests, requests
+        assert len(requests) == baseline, requests[baseline:]
         assert not errors, errors
         page.locator(".leaflet-popup-close-button").click()
         page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
@@ -73,7 +79,8 @@ def main():
             args.screenshot.parent.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(args.screenshot))
         total = page.evaluate("config.layers.reduce((sum, item) => sum + item.count, 0)")
-        print(f"Standalone HTML smoke passed: {total:,} features, zoom/pan/layer toggles/popups, zero network requests")
+        print(f"Standalone HTML smoke passed: {total:,} features, zoom/pan/layer toggles/popups, "
+              "VWorld basemap on by default, zero requests once switched off")
         browser.close()
 
 
