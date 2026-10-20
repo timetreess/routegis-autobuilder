@@ -6,6 +6,8 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-20
+
 ### Changed
 
 - Fetch up to three provider groups concurrently, with one owned client and sequential layers/tiles per provider. Preserve Overpass companion-response reuse, selection/report order, monotonic progress and caller-thread callbacks/validation/export. Stop follow-up requests and close all workers before cancellation removes staging; injected providers remain sequential and caller-owned.
