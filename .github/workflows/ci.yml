@@ -13,7 +13,8 @@ permissions:
 jobs:
   test:
     name: Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    # setup-python cannot install Python 3.9 on the ubuntu-26.04 latest runner.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
