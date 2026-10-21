@@ -6,6 +6,7 @@ import importlib
 import shutil
 import subprocess
 import sys
+from threading import get_ident
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import Mock
@@ -23,16 +24,23 @@ def _assert_plugin_build(project_root, plugin_parent, package, output_directory)
     setattr(CachedService, "build", build)
     cached_modules = {name: module for name, module in sys.modules.items() if name == "routegis" or name.startswith("routegis.")}
 
+    supervisor = get_ident()
+
     class Task:
         CanCancel = 1
 
         def __init__(self, *_args):
             self.progress = []
+            self.cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
 
         def isCanceled(self):
-            return False
+            return self.cancelled
 
         def setProgress(self, percent):
+            assert get_ident() == supervisor, "Qt task progress must stay on the QgsTask thread"
             self.progress.append(percent)
 
     # Only Qt/QGIS are stubbed; core imports, task execution and output are real.
@@ -55,7 +63,11 @@ def _assert_plugin_build(project_root, plugin_parent, package, output_directory)
     service = wizard.ProjectService()
     real_build = service.build
     fixture = fixture_provider(Path(project_root) / "tests" / "fixtures" / "spatial_mock.json")
-    service.build = lambda config, **kwargs: real_build(config, provider=fixture, **kwargs)
+    def build_in_python_worker(config, **kwargs):
+        assert get_ident() != supervisor, "pyproj must never execute on a Qt-owned worker"
+        return real_build(config, provider=fixture, **kwargs)
+
+    service.build = build_in_python_worker
     task = wizard.ProjectBuildTask(service, config, api_key="", data_go_kr_service_key="")
 
     assert task.run(), task.error
@@ -64,6 +76,20 @@ def _assert_plugin_build(project_root, plugin_parent, package, output_directory)
     assert task.result.web_map_html.is_file()
     assert task.result.downloads[0].status == "success"
     assert task.progress[0] == 0 and task.progress[-1] == 99
+
+    # Drawing analysis also invokes pyproj while recommending source CRSs.
+    analysis = wizard.DrawingAnalysisTask(
+        service.settings, config.source_drawing, "경기도",
+    )
+    assert analysis.run(), analysis.error
+    assert analysis.result["report"] is not None
+    assert analysis.progress[0] == 0 and analysis.progress[-1] == 80
+
+    # Cancellation before worker dispatch must not publish partial results.
+    cancelled = wizard.ProjectBuildTask(service, config, api_key="", data_go_kr_service_key="")
+    cancelled.cancel()
+    assert not cancelled.run()
+    assert cancelled.result is None and cancelled.error is None
     assert type(service).__module__ == f"{package}.routegis.app.project_service"
     assert CachedService.build is build
     assert all(sys.modules[name] is module for name, module in cached_modules.items())
