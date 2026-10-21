@@ -79,6 +79,13 @@ Shapefile 속성은 국내 CAD/GIS 환경과의 호환을 위해 EUC-KR로 저�
 
 ---
 
+## 0.3.2 릴리즈의 주요 개선
+
+다음 수정이 포함된 설치용 ZIP은 **0.3.2 릴리즈**에서 받을 수 있습니다.
+
+- Windows QGIS의 백그라운드 작업에서 발생할 수 있는 pyproj/PROJ 네이티브 충돌을 방지하도록 도면 분석과 프로젝트 생성을 Python 소유 스레드에서 실행합니다. 진행률과 QGIS 상태 갱신은 감독하는 QGIS 작업 스레드에서 처리합니다.
+- 플러그인에 포함된 `certifi`를 보안 수정 버전 `2026.10.19`로 업데이트했습니다.
+
 ## 0.3.1 릴리즈의 주요 개선
 
 다음 기능이 포함된 설치용 ZIP은 **0.3.1 릴리즈**에서 받을 수 있습니다. 이전 0.2.9에는 포함되지 않았습니다.
@@ -118,7 +125,7 @@ Shapefile 속성은 국내 CAD/GIS 환경과의 호환을 위해 EUC-KR로 저�
 
 가장 일반적인 사용 방법입니다. **QGIS 3.34 이상 3.x**, 내장 Python **3.9 이상**인 Windows 환경을 지원합니다.
 
-1. [0.3.1 릴리즈](https://github.com/timetreess/routegis-autobuilder/releases/tag/v0.3.1)에서 **`routegis_autobuilder.0.3.1.zip`**을 내려받습니다. `Source code (zip)`은 설치용 파일이 아닙니다.
+1. [0.3.2 릴리즈](https://github.com/timetreess/routegis-autobuilder/releases/tag/v0.3.2)에서 **`routegis_autobuilder.0.3.2.zip`**을 내려받습니다. `Source code (zip)`은 설치용 파일이 아닙니다.
 2. **ZIP은 압축을 풀지 않고 그대로 사용합니다.**
 3. QGIS에서 **플러그인 → 플러그인 관리 및 설치 → ZIP 파일에서 설치**를 엽니다.
 4. 내려받은 ZIP을 선택하고 **플러그인 설치**를 누릅니다.

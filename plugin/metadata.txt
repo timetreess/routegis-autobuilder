@@ -1,13 +1,13 @@
 [general]
 name=RouteGIS AutoBuilder
 description=Build analysis-ready QGIS projects from DXF route drawings.
-version=0.3.1
+version=0.3.2
 qgisMinimumVersion=3.34
 qgisMaximumVersion=3.99
 author=한재혁
 email=103619593+timetreess@users.noreply.github.com
 about=Converts DXF routes into analysis buffers, spatial-data layers, GeoPackage, Shapefile and styled QGIS projects. The release archive bundles its pure-Python dependencies and uses the Shapely, pyproj and NumPy packages supplied by supported QGIS installations.
-changelog=0.3.1: Improve large-route downloads with bounded provider concurrency, quieter progress logs, denser VWorld planning, Ecology GML CRS support and invalid-polygon repair. Includes the self-contained HTML web map and background DXF analysis introduced in 0.3.0.
+changelog=0.3.2: Prevent Windows QGIS crashes by running DXF analysis and project builds on Python-owned worker threads while keeping QGIS task progress on the supervising thread. Update vendored certifi to 2026.10.19.
 tags=route,dxf,cad,spatial-analysis,korea
 homepage=https://github.com/timetreess/routegis-autobuilder#readme
 repository=https://github.com/timetreess/routegis-autobuilder

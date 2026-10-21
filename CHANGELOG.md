@@ -6,6 +6,13 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-21
+
+### Fixed
+
+- Run DXF analysis and project builds in Python-owned worker threads instead of Qt-managed task threads, while keeping QGIS task progress and signals on the supervising thread. This avoids PROJ context crashes in Windows QGIS worker threads.
+- Update the vendored `certifi` dependency to `2026.10.19` to include the patched release.
+
 ## [0.3.1] - 2026-10-20
 
 ### Changed

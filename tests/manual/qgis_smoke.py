@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-EXPECTED_VERSION = "0.3.1"
+EXPECTED_VERSION = "0.3.2"
 CORE_PACKAGE = ""
 DEFAULT_LAYER_IDS = (
     "ecology_nature",

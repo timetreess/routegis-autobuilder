@@ -3,4 +3,4 @@
 from .models import PipelineResult, PipelineState, ProjectConfig
 
 __all__ = ["PipelineResult", "PipelineState", "ProjectConfig"]
-__version__ = "0.3.1"
+__version__ = "0.3.2"
