@@ -164,12 +164,28 @@ def _staging_directory(project_directory: Path) -> Path:
 
 def _publish_project(staging: Path, project_directory: Path) -> None:
     backup: Path | None = None
+    new_project = not project_directory.exists()
+    operation = "완성된 프로젝트 폴더 저장"
+    source, target = staging, project_directory
     try:
         _close_project_logger(project_directory)
-        if project_directory.exists():
+        if not new_project:
             backup = project_directory.with_name(f".{project_directory.name}.backup-{uuid.uuid4().hex}")
+            operation = "기존 프로젝트 폴더 백업"
+            source, target = project_directory, backup
             _replace_directory(project_directory, backup)
-        _replace_directory(staging, project_directory)
+        operation = "완성된 프로젝트 폴더 저장"
+        source, target = staging, project_directory
+        try:
+            _replace_directory(staging, project_directory)
+        except PermissionError as exc:
+            # Windows can deny renaming a directory while a reader scans a new
+            # artifact, even though every file is complete and still readable.
+            # Never use this fallback when replacing a previous project.
+            if not new_project or getattr(exc, "winerror", None) not in {5, 32, 33}:
+                raise
+            operation = "새 프로젝트 폴더로 완성된 파일 복사"
+            _copy_new_project(staging, project_directory)
     except BaseException as exc:
         try:
             if project_directory.exists() and not staging.exists():
@@ -177,14 +193,52 @@ def _publish_project(staging: Path, project_directory: Path) -> None:
             if backup is not None and backup.exists() and not project_directory.exists():
                 _replace_directory(backup, project_directory)
         except OSError as rollback_error:
-            raise ConfigurationError("프로젝트 교체 실패 후 기존 결과를 복구할 수 없습니다.") from rollback_error
+            raise ConfigurationError(
+                "프로젝트 교체 실패 후 기존 결과를 복구할 수 없습니다.\n"
+                f"최초 오류: {_filesystem_error(exc)}\n"
+                f"복구 오류: {_filesystem_error(rollback_error)}\n"
+                f"기존 결과 백업: {backup}\n임시 결과: {staging}\n최종 위치: {project_directory}"
+            ) from rollback_error
         if isinstance(exc, OSError):
             raise ConfigurationError(
-                "기존 결과 파일이 사용 중입니다. QGIS에서 해당 프로젝트와 레이어를 닫은 뒤 다시 실행해 주세요."
+                f"프로젝트 최종 저장에 실패했습니다.\n작업: {operation}\n"
+                f"원본: {source}\n대상: {target}\n원인: {_filesystem_error(exc)}\n"
+                "폴더 변경 권한 또는 다른 프로그램의 파일 사용 여부를 확인해 주세요.\n"
+                f"임시 결과 위치: {staging}"
             ) from exc
         raise
     if backup is not None:
         shutil.rmtree(backup, ignore_errors=True)
+
+
+def _filesystem_error(error: BaseException) -> str:
+    codes = ", ".join(
+        f"{name}={value}"
+        for name in ("winerror", "errno")
+        if (value := getattr(error, name, None)) is not None
+    )
+    return f"{type(error).__name__} ({codes}): {error}" if codes else f"{type(error).__name__}: {error}"
+
+
+def _copy_new_project(staging: Path, project_directory: Path) -> None:
+    # Claim an absent destination exclusively. A concurrent creator's directory
+    # must not be overwritten or removed, including if the copy later fails.
+    project_directory.mkdir()
+    try:
+        shutil.copytree(
+            staging,
+            project_directory,
+            dirs_exist_ok=True,
+            ignore=lambda directory, _names: ["project_manifest.json"] if Path(directory) == staging else [],
+        )
+        # An incomplete copy must not look like a reusable RouteGIS project.
+        manifest = staging / "project_manifest.json"
+        if manifest.is_file():
+            shutil.copy2(manifest, project_directory / manifest.name)
+    except BaseException:
+        shutil.rmtree(project_directory, ignore_errors=True)
+        raise
+    shutil.rmtree(staging, ignore_errors=True)
 
 
 def _replace_directory(source: Path, target: Path) -> None:
@@ -492,10 +546,23 @@ class ProjectService:
             )
             notify(99, "완성된 프로젝트를 최종 폴더에 저장 중")
             _close_project_logger(staging)
-            _publish_project(staging, project_directory)
         except BaseException:
             _close_project_logger(staging)
             shutil.rmtree(staging, ignore_errors=True)
+            raise
+
+        try:
+            _publish_project(staging, project_directory)
+        except Exception as exc:
+            # The build is complete: retain its artifacts and diagnostics so a
+            # filesystem failure does not force another download/conversion.
+            try:
+                log = _logger(staging / "logs" / "app.log", api_key, data_go_kr_service_key)
+                log.error("최종 저장 실패 · 완성된 임시 결과 보존: %s", exc)
+            except OSError:
+                pass  # Do not mask the original failure if logging is also blocked.
+            finally:
+                _close_project_logger(staging)
             raise
 
         result.project_directory = project_directory

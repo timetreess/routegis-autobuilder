@@ -6,6 +6,11 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ## [Unreleased]
 
+### Fixed
+
+- Finish first-time Windows project publication by exclusively creating a new destination and copying completed artifacts when access/sharing locks prevent renaming the staging directory. Publish the Manifest last; never apply the fallback to an existing project or a concurrently created destination.
+- Preserve completed staging results and redacted logs after final publication failures. Report the failed operation, source/destination paths and original Windows/OS error instead of assuming an existing QGIS project is open.
+
 ## [0.3.2] - 2026-10-21
 
 ### Fixed

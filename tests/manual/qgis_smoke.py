@@ -955,6 +955,57 @@ def _assert_wizard_provider_requests(wizard_module: Any, interface: Any, project
         wizard.deleteLater()
 
 
+def _assert_first_publish_with_open_html(wizard_module: Any, project_root: Path, temporary_root: Path) -> None:
+    """A reader of a new HTML must not prevent a Windows background build."""
+    from time import monotonic
+
+    from qgis.PyQt.QtTest import QTest
+    from qgis.core import QgsApplication, QgsProject
+
+    ProjectService = _core_module("app.project_service").ProjectService
+    ProjectConfig = _core_module("models").ProjectConfig
+    output = temporary_root / "publish-read-lock"
+    config = ProjectConfig(
+        project_name="Read lock", source_drawing=project_root / "tests/fixtures/sample_route.dxf",
+        source_layers=(), source_crs="EPSG:5186", output_crs="EPSG:5186",
+        buffer_distance=1000, selected_layers=(), output_directory=output, project_type="non_linear",
+    )
+    service = ProjectService()
+    build = service.build
+    streams, completed = [], []
+
+    def build_with_reader(config, **kwargs):
+        report = kwargs.pop("on_progress")
+
+        def progress(percent, message):
+            if percent == 99:
+                staging = next(output.glob(".Read_lock.build-*"))
+                streams.append((staging / "Read_lock.html").open("rb"))
+            report(percent, message)
+
+        return build(config, on_progress=progress, **kwargs)
+
+    service.build = build_with_reader
+    task = wizard_module.ProjectBuildTask(service, config, api_key="", data_go_kr_service_key="")
+    task.completed.connect(lambda *result: completed.append(result))
+    project = QgsProject()
+    try:
+        QgsApplication.taskManager().addTask(task)
+        deadline = monotonic() + 30
+        while not completed and monotonic() < deadline:
+            QTest.qWait(10)
+        assert completed, "Read-locked HTML background build timed out"
+        error, result, cancelled = completed[0]
+        assert not error and not cancelled and result is not None, error
+        assert result.web_map_html.read_bytes() == streams[0].read()
+        assert project.read(str(result.project_file))
+        assert project.mapLayers() and all(layer.isValid() for layer in project.mapLayers().values())
+    finally:
+        project.clear()
+        for stream in streams:
+            stream.close()
+
+
 def _assert_headless_project_layout(project_root: Path, temporary_root: Path) -> None:
     from unittest.mock import patch
 
@@ -1273,6 +1324,8 @@ def run(project_root: Path, plugin_directory: Path, previous_plugin_directory: P
             _assert_native_category_edge_values(temporary_root)
             _stage("headless project layout")
             _assert_headless_project_layout(project_root, temporary_root)
+            _stage("first publication with read-locked HTML")
+            _assert_first_publish_with_open_html(wizard_module, project_root, temporary_root)
             _stage("empty result group labels")
             _assert_empty_result_group_labels(project_root, temporary_root)
             _stage("wizard provider requests")
