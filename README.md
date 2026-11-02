@@ -79,6 +79,14 @@ Shapefile 속성은 국내 CAD/GIS 환경과의 호환을 위해 EUC-KR로 저�
 
 ---
 
+## 0.3.3 릴리즈의 주요 개선
+
+다음 수정이 포함된 설치용 ZIP은 **0.3.3 릴리즈**에서 받을 수 있습니다.
+
+- 토지소유정보 등 공간정보의 Geometry·좌표계 검증이 실패하면, 기존의 일반 문구 대신 구체적인 검증 코드와 원인을 표시합니다.
+- VWorld DNS가 일시적으로 해석되지 않을 때 더 긴 간격으로 재시도하고, 복구되지 않으면 인터넷·DNS·VPN/프록시 점검 방법을 안내합니다.
+- Windows에서 새 프로젝트 최종 저장이 파일 접근 잠금으로 막히는 경우에도 완성된 결과물을 안전하게 저장하고, 실패 시 임시 결과와 진단 로그를 보존합니다.
+
 ## 0.3.2 릴리즈의 주요 개선
 
 다음 수정이 포함된 설치용 ZIP은 **0.3.2 릴리즈**에서 받을 수 있습니다.
@@ -125,7 +133,7 @@ Shapefile 속성은 국내 CAD/GIS 환경과의 호환을 위해 EUC-KR로 저�
 
 가장 일반적인 사용 방법입니다. **QGIS 3.34 이상 3.x**, 내장 Python **3.9 이상**인 Windows 환경을 지원합니다.
 
-1. [0.3.2 릴리즈](https://github.com/timetreess/routegis-autobuilder/releases/tag/v0.3.2)에서 **`routegis_autobuilder.0.3.2.zip`**을 내려받습니다. `Source code (zip)`은 설치용 파일이 아닙니다.
+1. [0.3.3 릴리즈](https://github.com/timetreess/routegis-autobuilder/releases/tag/v0.3.3)에서 **`routegis_autobuilder.0.3.3.zip`**을 내려받습니다. `Source code (zip)`은 설치용 파일이 아닙니다.
 2. **ZIP은 압축을 풀지 않고 그대로 사용합니다.**
 3. QGIS에서 **플러그인 → 플러그인 관리 및 설치 → ZIP 파일에서 설치**를 엽니다.
 4. 내려받은 ZIP을 선택하고 **플러그인 설치**를 누릅니다.

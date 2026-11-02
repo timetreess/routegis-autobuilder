@@ -6,6 +6,8 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-02
+
 ### Fixed
 
 - Finish first-time Windows project publication by exclusively creating a new destination and copying completed artifacts when access/sharing locks prevent renaming the staging directory. Publish the Manifest last; never apply the fallback to an existing project or a concurrently created destination.
