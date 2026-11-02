@@ -6,6 +6,12 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-02
+
+### Fixed
+
+- Revalidate and repair VWorld geometries after transforming them into the project CRS, preserving valid polygon components and logging the affected feature IDs before AOI filtering.
+
 ## [0.3.3] - 2026-11-02
 
 ### Fixed
