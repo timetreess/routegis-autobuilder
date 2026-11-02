@@ -327,9 +327,13 @@ def test_split_transforms_each_whole_child_polygon_to_request_crs():
 
     children = planner.split(tile)
 
-    assert [child.request_bounds for child in children] == pytest.approx(
-        [
-            transform_geometry(box(*child.output_bounds), "EPSG:5186", "EPSG:4326").bounds
-            for child in children
-        ]
-    )
+    actual_bounds = [coordinate for child in children for coordinate in child.request_bounds]
+    expected_bounds = [
+        coordinate
+        for child in children
+        for coordinate in transform_geometry(
+            box(*child.output_bounds), "EPSG:5186", "EPSG:4326"
+        ).bounds
+    ]
+
+    assert actual_bounds == pytest.approx(expected_bounds)
