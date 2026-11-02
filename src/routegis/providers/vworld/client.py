@@ -850,6 +850,17 @@ class VWorldClient:
                 source="vworld",
             )
             output_layer = transform_layer(request_layer, aoi.crs)
+            for feature in output_layer.features:
+                if feature.geometry.is_valid:
+                    continue
+                feature.geometry = self._repair_geometry(
+                    feature.geometry,
+                    definition.geometry_type,
+                )
+                context.notify(
+                    f"좌표변환 후 도형 오류 복구 · 객체 {feature.feature_id or '(ID 없음)'} · "
+                    "요청 도형 유형의 모든 요소 보존 (면 도형의 면적 0 축퇴 선·점은 제외)"
+                )
             aoi_geometry = self._combined_geometry(aoi)
             output_layer.features = [
                 feature for feature in output_layer.features if feature.geometry.intersects(aoi_geometry)

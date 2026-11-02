@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import httpx
 import pytest
-from shapely.geometry import box
+from shapely.geometry import Polygon, box
 
 from routegis.errors import ProviderError
 from routegis.models import LayerDefinition, SpatialFeature, SpatialLayer
@@ -834,6 +834,34 @@ def test_invalid_source_polygon_with_collapsed_spike_keeps_all_polygon_area_and_
     assert repaired.geometry.area == 100
     assert repaired.properties == {"name": "original"}
     assert any("spiked-parcel" in event and "복구" in event for event in events)
+
+
+def test_invalid_geometry_after_crs_transform_is_repaired_before_return(monkeypatch):
+    import routegis.providers.vworld.client as vworld_module
+
+    definition = replace(LAND_OWNERSHIP_DEFINITION, request_crs="EPSG:5186", response_crs="EPSG:5186")
+    original_transform_layer = vworld_module.transform_layer
+
+    def transform_with_invalid_output(layer, target_crs):
+        transformed = original_transform_layer(layer, target_crs)
+        transformed.features[0].geometry = Polygon(
+            [(10, 10), (20, 20), (20, 10), (10, 20), (10, 10)]
+        )
+        return transformed
+
+    monkeypatch.setattr(vworld_module, "transform_layer", transform_with_invalid_output)
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(
+        200,
+        json={"type": "FeatureCollection", "features": [_polygon_feature("parcel", (10, 10, 20, 20))]},
+    ))) as http_client:
+        result = VWorldClient("secret-key", retries=0, client=http_client).fetch_layer(
+            definition, _aoi((0, 0, 100, 100)),
+        )
+
+    assert result.status == "success", result.error
+    assert result.layer is not None
+    assert result.layer.features[0].geometry.is_valid
+    assert result.layer.features[0].geometry.area == 50
 
 
 def test_completely_collapsed_source_polygon_still_fails_atomically():
