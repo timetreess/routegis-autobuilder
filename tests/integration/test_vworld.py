@@ -1503,6 +1503,51 @@ def test_timeout_is_retried_with_backoff():
     assert result.successful_tile_count == 1
 
 
+def test_dns_resolution_error_uses_longer_backoff_and_recovers():
+    attempts = 0
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.ConnectError("[Errno 11002] getaddrinfo failed", request=request)
+        return httpx.Response(200, content=b"<WFS_Capabilities/>")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        client = VWorldClient(
+            "secret-key",
+            retries=2,
+            backoff=0.25,
+            client=http_client,
+            sleep=sleeps.append,
+        )
+        with pytest.raises(ProviderError, match="레이어 목록"):
+            client.discover_layers()
+
+    assert attempts == 3
+    assert sleeps == [1.0, 2.0]
+
+
+def test_exhausted_dns_resolution_error_has_actionable_guidance():
+    attempts = 0
+
+    def handler(request: httpx.Request):
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ConnectError("[Errno 11002] getaddrinfo failed", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        client = VWorldClient("secret-key", retries=1, client=http_client, sleep=lambda _: None)
+        with pytest.raises(ProviderError) as caught:
+            client.discover_layers()
+
+    assert attempts == 2
+    assert "DNS" in str(caught.value)
+    assert "인터넷 연결" in str(caught.value)
+    assert "secret-key" not in str(caught.value)
+
+
 @pytest.mark.parametrize("status_code", [429, 500, 502, 503, 504])
 def test_vworld_transient_statuses_are_retried_and_counted(status_code):
     attempts = 0

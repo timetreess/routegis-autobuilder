@@ -32,6 +32,14 @@ TRANSIENT_STATUS = {429, 500, 502, 503, 504}
 WFS_ENDPOINT = "https://api.vworld.kr/req/wfs"
 DATA_ENDPOINT = "https://api.vworld.kr/req/data"
 WFS_FEATURE_LIMIT = 1000
+DNS_RESOLUTION_ERROR_MARKERS = (
+    "getaddrinfo failed",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "nodename nor servname provided",
+    "no address associated with hostname",
+    "name resolution error",
+)
 GEOMETRY_TYPES = {
     "PolygonPropertyType": "MultiPolygon",
     "MultiSurfacePropertyType": "MultiPolygon",
@@ -120,6 +128,17 @@ class VWorldClient:
     def _redact(self, message: str) -> str:
         return redact_sensitive_text(message, self._api_key, redact_urls=False) or ""
 
+    @staticmethod
+    def _is_dns_resolution_error(error: BaseException | None) -> bool:
+        seen: set[int] = set()
+        while error is not None and id(error) not in seen:
+            seen.add(id(error))
+            message = str(error).casefold()
+            if any(marker in message for marker in DNS_RESOLUTION_ERROR_MARKERS):
+                return True
+            error = error.__cause__ or error.__context__
+        return False
+
     def _response(
         self,
         endpoint: str,
@@ -179,10 +198,22 @@ class VWorldClient:
                 last_error = exc
                 transient = isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
                 if transient and attempt < self._retries:
-                    self._sleep(self._backoff * (2**attempt))
+                    delay = self._backoff * (2**attempt)
+                    if self._is_dns_resolution_error(exc):
+                        # DNS failures can outlive the very short default
+                        # backoff. Give the resolver a few seconds to recover
+                        # without splitting the WFS query into more requests.
+                        delay = min(max(delay, 1.0 * (2**attempt)), 60.0)
+                    self._sleep(delay)
                     continue
                 break
         detail = self._redact(f"{type(last_error).__name__}: {last_error}" if last_error is not None else "알 수 없는 오류")
+        if self._is_dns_resolution_error(last_error):
+            raise ProviderError(
+                "VWorld 서버 주소를 DNS에서 찾지 못했습니다. 인터넷 연결, DNS 서버, "
+                "VPN/프록시 상태를 확인한 뒤 다시 실행해 주세요. "
+                f"상세: {detail}"
+            ) from last_error
         recoverable = isinstance(last_error, httpx.TimeoutException) or (
             isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code in {500, 502, 503, 504}
         )

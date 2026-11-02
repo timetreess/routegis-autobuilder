@@ -10,6 +10,8 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 - Finish first-time Windows project publication by exclusively creating a new destination and copying completed artifacts when access/sharing locks prevent renaming the staging directory. Publish the Manifest last; never apply the fallback to an existing project or a concurrently created destination.
 - Preserve completed staging results and redacted logs after final publication failures. Report the failed operation, source/destination paths and original Windows/OS error instead of assuming an existing QGIS project is open.
+- Show validation issue codes and concrete messages in failed layer results instead of hiding geometry/CRS causes behind a generic error.
+- Retry transient VWorld DNS-resolution failures with a longer bounded backoff, then report actionable network/DNS/proxy guidance.
 
 ## [0.3.2] - 2026-10-21
 

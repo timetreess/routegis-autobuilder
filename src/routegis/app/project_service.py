@@ -695,9 +695,18 @@ class ProjectService:
                         if not any(issue.severity == "error" for issue in layer_issues):
                             layer_issues += validate_layer(result.layer) + validate_layer_intersects_aoi(result.layer, aoi)
                         download_issues[index] = layer_issues
-                        if any(issue.severity == "error" for issue in layer_issues):
+                        validation_errors = [
+                            issue for issue in layer_issues if issue.severity == "error"
+                        ]
+                        if validation_errors:
                             result.status = "failed"
-                            result.error = "Geometry 또는 좌표계 검증에 실패했습니다."
+                            details = "; ".join(
+                                f"{issue.code}: {issue.message}"
+                                for issue in validation_errors[:3]
+                            )
+                            omitted = len(validation_errors) - 3
+                            suffix = f" (그 외 {omitted}건)" if omitted > 0 else ""
+                            result.error = f"Geometry 또는 좌표계 검증에 실패했습니다: {details}{suffix}"
                             result.layer = None
                             result.feature_count = 0
                 except Exception as exc:

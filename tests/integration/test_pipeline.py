@@ -1884,6 +1884,8 @@ def test_pipeline_rejects_provider_output_contract_mismatch(
     assert result.state == PipelineState.COMPLETED_WITH_WARNINGS
     assert result.downloads[0].status == "failed"
     assert result.downloads[0].layer is None
+    assert issue_code in (result.downloads[0].error or "")
+    assert result.issues[0].message in (result.downloads[0].error or "")
     assert [issue.code for issue in result.issues] == [issue_code]
     with closing(sqlite3.connect(result.geopackage)) as connection:
         contents = {
