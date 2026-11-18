@@ -13,15 +13,17 @@ from shapely import make_valid, normalize
 from shapely.errors import ShapelyError
 from shapely.geometry import LineString, MultiLineString, MultiPoint, MultiPolygon, Point, Polygon
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import unary_union
 
 from ... import __version__
 from ...errors import CrsError, ProviderError, RetryableProviderError
 from ...gis import AoiTile, AoiTilePlanner, compute_request_budget
-from ...gis.crs import normalize_crs, transform_layer
+from ...gis.crs import normalize_crs
 from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLayer
-from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, is_resource_error, read_response_bytes, retry_delay, split_failed_tile
-from ..tls import CERT_GUIDANCE, create_httpx_client, is_certificate_verification_error
+from ..download import (
+    DEFAULT_MAX_RESPONSE_BYTES, RECOVERABLE_SERVER_STATUS, TRANSIENT_STATUS, FetchContext, clip_to_aoi,
+    is_resource_error, read_response_bytes, retry_delay, split_failed_tile, validate_download_limits,
+)
+from ..tls import CERT_GUIDANCE, certificate_provider_error, create_httpx_client, is_certificate_verification_error
 
 
 DEFAULT_OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
@@ -30,7 +32,6 @@ FALLBACK_OVERPASS_ENDPOINTS = (
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 )
 OVERPASS_USER_AGENT = f"RouteGIS-AutoBuilder/{__version__}"
-TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_RETRIES = 2
 MAX_RING_SEARCH_STATES = 50_000
 MAX_RING_SEARCH_BRANCHES = 100_000
@@ -93,36 +94,20 @@ class OverpassClient:
             if self._endpoint == DEFAULT_OVERPASS_ENDPOINT
             else (self._endpoint,)
         )
-        for name, value in (
-            ("timeout", timeout),
-            ("tile_size_m", tile_size_m),
-            ("minimum_tile_size_m", minimum_tile_size_m),
-        ):
-            if not isfinite(value) or value <= 0:
-                raise ValueError(f"{name} must be finite and positive")
-        if request_budget_minimum < 0:
-            raise ValueError("request_budget_minimum must be non-negative")
-        if request_budget_per_tile < 0:
-            raise ValueError("request_budget_per_tile must be non-negative")
-        if request_budget_maximum <= 0:
-            raise ValueError("request_budget_maximum must be positive")
-        if max_split_depth < 0:
-            raise ValueError("max_split_depth must be non-negative")
-        if not 1 <= max_response_bytes <= DEFAULT_MAX_RESPONSE_BYTES:
-            raise ValueError(
-                "max_response_bytes must be between 1 and "
-                f"{DEFAULT_MAX_RESPONSE_BYTES}"
-            )
+        self._limits = validate_download_limits(
+            positive_sizes={"timeout": timeout, "tile_size_m": tile_size_m},
+            request_budget_minimum=request_budget_minimum,
+            request_budget_per_tile=request_budget_per_tile,
+            request_budget_maximum=request_budget_maximum,
+            max_split_depth=max_split_depth,
+            minimum_tile_size_m=minimum_tile_size_m,
+            max_response_bytes=max_response_bytes,
+            coerce=True,
+        )
 
         self._retries = min(max(int(retries), 0), MAX_RETRIES)
         self._backoff = max(float(backoff), 0.0)
         self._tile_size_m = float(tile_size_m)
-        self._request_budget_minimum = int(request_budget_minimum)
-        self._request_budget_per_tile = int(request_budget_per_tile)
-        self._request_budget_maximum = int(request_budget_maximum)
-        self._max_split_depth = int(max_split_depth)
-        self._minimum_tile_size_m = float(minimum_tile_size_m)
-        self._max_response_bytes = int(max_response_bytes)
         self._power_response_cache: _PowerResponseCache | None = None
         self._sleep = sleep
         self._on_progress = on_progress
@@ -246,34 +231,23 @@ class OverpassClient:
                                 f"마지막 서버={urlsplit(endpoint).hostname}, "
                                 f"전송 시도={attempt + 1}회. 잠시 후 다시 시도해 주세요."
                             )
-                        error_type = RetryableProviderError if status in {500, 502, 503, 504} else ProviderError
+                        error_type = RetryableProviderError if status in RECOVERABLE_SERVER_STATUS else ProviderError
                         raise error_type(message)
                     else:
-                        content = read_response_bytes(response, self._max_response_bytes, "Overpass")
+                        content = read_response_bytes(response, self._limits.max_response_bytes, "Overpass")
                         # Reuse the working server for subsequent tiles and layers.
                         self._request_endpoints = (
                             self._request_endpoints[endpoint_index:]
                             + self._request_endpoints[:endpoint_index]
                         )
                         return content
-            except (httpx.TimeoutException, httpx.TransportError) as exc:
-                if is_certificate_verification_error(exc):
-                    raise ProviderError(
-                        "Overpass HTTPS 인증서 검증 실패. "
-                        f"{CERT_GUIDANCE}"
-                    ) from exc
-                last_transport_error = exc
-                if attempt < self._retries:
-                    self._sleep(self._backoff * (2**attempt))
-                    continue
-                break
             except httpx.HTTPError as exc:
                 if is_certificate_verification_error(exc):
-                    raise ProviderError(
-                        "Overpass HTTPS 인증서 검증 실패. "
-                        f"{CERT_GUIDANCE}"
-                    ) from exc
+                    raise certificate_provider_error("Overpass HTTPS 인증서 검증 실패.", separator=" ") from exc
                 last_transport_error = exc
+                if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)) and attempt < self._retries:
+                    self._sleep(self._backoff * (2**attempt))
+                    continue
                 break
             if retry_transient_status:
                 context.notify(f"서버 일시 오류 · {delay:g}초 후 대체 서버/재시도 {attempt + 1}/{self._retries}")
@@ -992,15 +966,6 @@ class OverpassClient:
         return hashlib.sha256(canonical).hexdigest()
 
     @staticmethod
-    def _combined_geometry(layer: SpatialLayer):
-        geometries = [
-            feature.geometry for feature in layer.features if not feature.geometry.is_empty
-        ]
-        if not geometries:
-            raise ProviderError("Overpass 조회 범위를 만들 수 없습니다.")
-        return unary_union(geometries)
-
-    @staticmethod
     def _validate_definition(definition: LayerDefinition) -> None:
         expected_geometry = _GEOMETRY_TYPES.get(definition.id)
         if expected_geometry is None:
@@ -1042,8 +1007,8 @@ class OverpassClient:
                 aoi,
                 "EPSG:4326",
                 self._tile_size_m,
-                self._max_split_depth,
-                self._minimum_tile_size_m,
+                self._limits.max_split_depth,
+                self._limits.minimum_tile_size_m,
             )
             initial_tiles = planner.initial_tiles()
             reuse_power = reuse_power and cache.initial_tiles == tuple(initial_tiles)
@@ -1052,9 +1017,9 @@ class OverpassClient:
             context.initial_tile_count = len(initial_tiles)
             context.request_budget = compute_request_budget(
                 len(initial_tiles),
-                self._request_budget_minimum,
-                self._request_budget_per_tile,
-                self._request_budget_maximum,
+                self._limits.request_budget_minimum,
+                self._limits.request_budget_per_tile,
+                self._limits.request_budget_maximum,
             )
             if not initial_tiles:
                 raise ProviderError("Overpass 조회 타일을 만들 수 없습니다.")
@@ -1108,7 +1073,7 @@ class OverpassClient:
                 if (
                     definition.id in _POWER_LAYER_IDS
                     and not reuse_power
-                    and cache_size + len(content) <= self._max_response_bytes
+                    and cache_size + len(content) <= self._limits.max_response_bytes
                 ):
                     power_responses[query] = content
                     cache_size += len(content)
@@ -1138,13 +1103,7 @@ class OverpassClient:
                 features=[candidate.feature for candidate in candidates],
                 source="osm",
             )
-            output_layer = transform_layer(request_layer, aoi.crs)
-            aoi_geometry = self._combined_geometry(aoi)
-            output_layer.features = [
-                feature
-                for feature in output_layer.features
-                if feature.geometry.intersects(aoi_geometry)
-            ]
+            output_layer = clip_to_aoi(request_layer, aoi, "Overpass")
             # Publish only after all tiles, parsing and reprojection succeeded.
             if power_responses:
                 self._power_response_cache = _PowerResponseCache(definition.id, tuple(initial_tiles), tuple(leaves), power_responses)

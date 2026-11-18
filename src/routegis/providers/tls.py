@@ -7,6 +7,8 @@ from urllib.parse import quote
 
 import httpx
 
+from ..errors import ProviderError
+
 
 def is_certificate_verification_error(error: BaseException | None) -> bool:
     """Return True when *error* (or any chained cause) is a TLS verify failure."""
@@ -192,3 +194,11 @@ CERT_GUIDANCE = (
     "프록시를 사용 중이면 QGIS '설정 > 옵션 > 네트워크' 프록시와 Windows 프록시 설정을 확인해 주세요. "
     "추가 CA 파일이 있으면 ROUTEGIS_CA_BUNDLE 환경변수에 경로를 지정할 수 있습니다."
 )
+
+
+def certificate_provider_error(prefix: str, *, detail: str | None = None, separator: str = "\n") -> ProviderError:
+    """Build the provider-specific error for a TLS verification failure."""
+    message = f"{prefix}{separator}{CERT_GUIDANCE}"
+    if detail is not None:
+        message += f"\n상세: {detail}"
+    return ProviderError(message)

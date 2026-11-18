@@ -6,7 +6,7 @@ import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from math import ceil, isfinite, log2
+from math import ceil, log2
 from typing import Any
 from xml.etree import ElementTree as ET
 
@@ -17,18 +17,19 @@ from shapely import make_valid
 from shapely.errors import ShapelyError
 from shapely.geometry import MultiLineString, MultiPoint, MultiPolygon, shape
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import unary_union
 
 from ...errors import CrsError, ProviderError, RetryableProviderError
 from ...gis import AoiTile, AoiTilePlanner, compute_request_budget
 from ...gis.crs import normalize_crs, transform_layer
 from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLayer
 from ...security import redact_sensitive_text
-from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, is_resource_error, read_response_bytes, retry_delay, split_failed_tile
-from ..tls import CERT_GUIDANCE, create_httpx_client, is_certificate_verification_error
+from ..download import (
+    DEFAULT_MAX_RESPONSE_BYTES, RECOVERABLE_SERVER_STATUS, TRANSIENT_STATUS, FetchContext, filter_to_aoi,
+    is_resource_error, read_response_bytes, retry_delay, split_failed_tile, validate_download_limits,
+)
+from ..tls import certificate_provider_error, create_httpx_client, is_certificate_verification_error
 
 
-TRANSIENT_STATUS = {429, 500, 502, 503, 504}
 WFS_ENDPOINT = "https://api.vworld.kr/req/wfs"
 DATA_ENDPOINT = "https://api.vworld.kr/req/data"
 WFS_FEATURE_LIMIT = 1000
@@ -76,37 +77,24 @@ class VWorldClient:
     ):
         if not api_key.strip():
             raise ProviderError("VWorld API Key를 입력해 주세요.")
-        for name, value in (
-            ("land_ownership_tile_size_m", land_ownership_tile_size_m),
-            ("default_tile_size_m", default_tile_size_m),
-            ("minimum_tile_size_m", minimum_tile_size_m),
-        ):
-            if not isfinite(value) or value <= 0:
-                raise ValueError(f"{name} must be finite and positive")
-        if request_budget_minimum < 0:
-            raise ValueError("request_budget_minimum must be non-negative")
-        if request_budget_per_tile < 0:
-            raise ValueError("request_budget_per_tile must be non-negative")
-        if request_budget_maximum <= 0:
-            raise ValueError("request_budget_maximum must be positive")
-        if max_split_depth < 0:
-            raise ValueError("max_split_depth must be non-negative")
-        if not 1 <= max_response_bytes <= DEFAULT_MAX_RESPONSE_BYTES:
-            raise ValueError(
-                f"max_response_bytes must be between 1 and {DEFAULT_MAX_RESPONSE_BYTES}"
-            )
+        self._limits = validate_download_limits(
+            positive_sizes={
+                "land_ownership_tile_size_m": land_ownership_tile_size_m,
+                "default_tile_size_m": default_tile_size_m,
+            },
+            request_budget_minimum=request_budget_minimum,
+            request_budget_per_tile=request_budget_per_tile,
+            request_budget_maximum=request_budget_maximum,
+            max_split_depth=max_split_depth,
+            minimum_tile_size_m=minimum_tile_size_m,
+            max_response_bytes=max_response_bytes,
+        )
         self._api_key = api_key.strip()
         self._retries = max(retries, 0)
         self._backoff = max(backoff, 0.0)
         self._page_size = max(page_size, 1)
         self._land_ownership_tile_size_m = land_ownership_tile_size_m
         self._default_tile_size_m = default_tile_size_m
-        self._request_budget_minimum = request_budget_minimum
-        self._request_budget_per_tile = request_budget_per_tile
-        self._request_budget_maximum = request_budget_maximum
-        self._max_split_depth = max_split_depth
-        self._minimum_tile_size_m = minimum_tile_size_m
-        self._max_response_bytes = max_response_bytes
         self._sleep = sleep
         self._on_progress = on_progress
         self._check_cancelled = check_cancelled
@@ -159,7 +147,7 @@ class VWorldClient:
                         delay = retry_delay(response, self._backoff * (2**attempt))
                     else:
                         response.raise_for_status()
-                        content = read_response_bytes(response, self._max_response_bytes, "VWorld")
+                        content = read_response_bytes(response, self._limits.max_response_bytes, "VWorld")
                         service_error = self._resource_service_error(content)
                         if service_error:
                             last_error = RetryableProviderError(f"VWorld 서비스 일시 오류: {self._redact(service_error)}")
@@ -187,11 +175,10 @@ class VWorldClient:
                     continue
             except (httpx.RequestError, httpx.HTTPStatusError) as exc:
                 if is_certificate_verification_error(exc):
-                    raise ProviderError(
+                    raise certificate_provider_error(
                         "VWorld HTTPS 인증서를 확인할 수 없습니다. "
-                        "API Key 확인 이전의 보안 연결 단계에서 실패했습니다.\n"
-                        f"{CERT_GUIDANCE}\n"
-                        f"상세: {self._redact(str(exc))}"
+                        "API Key 확인 이전의 보안 연결 단계에서 실패했습니다.",
+                        detail=self._redact(str(exc)),
                     ) from exc
                 last_error = exc
                 transient = isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
@@ -213,7 +200,7 @@ class VWorldClient:
                 f"상세: {detail}"
             ) from last_error
         recoverable = isinstance(last_error, httpx.TimeoutException) or (
-            isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code in {500, 502, 503, 504}
+            isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code in RECOVERABLE_SERVER_STATUS
         )
         error_type = RetryableProviderError if recoverable else ProviderError
         raise error_type(f"VWorld 요청에 실패했습니다: {detail}") from last_error
@@ -520,13 +507,6 @@ class VWorldClient:
                 return total
         return None
 
-    @staticmethod
-    def _combined_geometry(layer: SpatialLayer):
-        geometries = [feature.geometry for feature in layer.features if not feature.geometry.is_empty]
-        if not geometries:
-            raise ProviderError("VWorld 조회 범위를 만들 수 없습니다.")
-        return unary_union(geometries)
-
     @classmethod
     def _repair_geometry(cls, geometry: BaseGeometry, geometry_type: str) -> BaseGeometry:
         families = {
@@ -756,7 +736,7 @@ class VWorldClient:
         context = FetchContext(
             provider="VWorld",
             initial_tile_count=0,
-            request_budget=self._request_budget_maximum,
+            request_budget=self._limits.request_budget_maximum,
             on_progress=self._on_progress,
             check_cancelled=self._check_cancelled,
         )
@@ -773,8 +753,8 @@ class VWorldClient:
                 aoi,
                 definition.request_crs,
                 tile_size_m,
-                self._max_split_depth,
-                self._minimum_tile_size_m,
+                self._limits.max_split_depth,
+                self._limits.minimum_tile_size_m,
             )
             initial_tiles = planner.initial_tiles()
             context = FetchContext(
@@ -782,12 +762,12 @@ class VWorldClient:
                 initial_tile_count=len(initial_tiles),
                 request_budget=compute_request_budget(
                     len(initial_tiles),
-                    self._request_budget_minimum,
-                    self._request_budget_per_tile,
-                    self._request_budget_maximum,
+                    self._limits.request_budget_minimum,
+                    self._limits.request_budget_per_tile,
+                    self._limits.request_budget_maximum,
                 ),
                 on_progress=self._on_progress,
-                request_budget_maximum=self._request_budget_maximum,
+                request_budget_maximum=self._limits.request_budget_maximum,
                 check_cancelled=self._check_cancelled,
             )
             if not initial_tiles:
@@ -855,10 +835,7 @@ class VWorldClient:
                     f"좌표변환 후 도형 오류 복구 · 객체 {feature.feature_id or '(ID 없음)'} · "
                     "요청 도형 유형의 모든 요소 보존 (면 도형의 면적 0 축퇴 선·점은 제외)"
                 )
-            aoi_geometry = self._combined_geometry(aoi)
-            output_layer.features = [
-                feature for feature in output_layer.features if feature.geometry.intersects(aoi_geometry)
-            ]
+            filter_to_aoi(output_layer, aoi, "VWorld")
             return context.success_result(output_layer)
         except (ProviderError, CrsError) as exc:
             return context.failed_result(definition.id, self._redact(str(exc)))
