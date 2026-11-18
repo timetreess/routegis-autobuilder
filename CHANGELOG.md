@@ -6,6 +6,14 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ## [Unreleased]
 
+### Removed
+
+- Remove the unused centerline-selection (`linear`) project type, the CLI `--route-layer` and `--project-type` options, and route assembly. Every valid DXF line object is always used for the analysis area, as in the Wizard.
+- Remove the external DWG-to-DXF converter adapter and the CLI `--dwg-converter` option. Save drawings as DXF before use.
+- Remove unused preview-layer helpers, bounding-box/custom-polygon analysis-area modes, unused pipeline states, export settings and the legacy `qgis_automation.py` launcher.
+- Drop `project_type`, `source.dwg_converter` and `route.buffer_source_layers` from `project_manifest.json`, and the empty `data/raw/` output folder.
+- Replace the implementation-era PRD with a current product specification and remove agent planning documents.
+
 ## [0.3.4] - 2026-11-02
 
 ### Fixed
