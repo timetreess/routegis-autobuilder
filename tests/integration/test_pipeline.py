@@ -14,7 +14,8 @@ from xml.etree import ElementTree as ET
 import pytest
 from shapely.geometry import LineString, Polygon
 
-from routegis.app import project_service as project_service_module
+from routegis.app import project_log as project_log_module
+from routegis.app import publish as publish_module
 from routegis.app.project_service import ProjectService
 from routegis.providers.fixture import FixtureProvider
 from routegis.errors import ConfigurationError, CrsError, ExportError, ProviderError, RouteGISError
@@ -745,7 +746,7 @@ def test_interrupted_staging_setup_removes_staging_directory(tmp_path: Path, fix
         (staging / "source").mkdir()
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(project_service_module, "_directories", interrupt)
+    monkeypatch.setattr(publish_module, "_directories", interrupt)
 
     with pytest.raises(KeyboardInterrupt):
         ProjectService().build(config)
@@ -771,7 +772,7 @@ def test_publish_retries_a_transient_windows_permission_error(tmp_path: Path, mo
 
     monkeypatch.setattr(Path, "replace", flaky_replace)
 
-    project_service_module._publish_project(staging, project_directory)
+    publish_module._publish_project(staging, project_directory)
 
     assert staging_attempts == 3
     assert (project_directory / "new.txt").read_text(encoding="utf-8") == "new"
@@ -798,7 +799,7 @@ def test_interrupted_publish_restores_previous_project(tmp_path: Path, monkeypat
     monkeypatch.setattr(Path, "replace", interrupting_replace)
 
     with pytest.raises(KeyboardInterrupt):
-        project_service_module._publish_project(staging, project_directory)
+        publish_module._publish_project(staging, project_directory)
 
     assert (project_directory / "old.txt").read_text(encoding="utf-8") == "old"
     assert (staging / "new.txt").read_text(encoding="utf-8") == "new"
@@ -1788,7 +1789,7 @@ def test_secret_filter_redacts_encoded_secrets_in_structured_log_arguments(
 ):
     record = logging.LogRecord("routegis.test", logging.WARNING, __file__, 1, message, arguments, None)
 
-    assert project_service_module._SecretFilter("a/b+?=%").filter(record)
+    assert project_log_module._SecretFilter("a/b+?=%").filter(record)
 
     rendered = record.getMessage()
     assert "***" in rendered
@@ -1799,4 +1800,4 @@ def test_secret_filter_redacts_encoded_secrets_in_structured_log_arguments(
 def test_redaction_preserves_ordinary_case_sensitive_text_semantics():
     message = "CaseToken casetoken CASETOKEN"
 
-    assert project_service_module._redact(message, "CaseToken") == "*** casetoken CASETOKEN"
+    assert project_log_module._redact(message, "CaseToken") == "*** casetoken CASETOKEN"

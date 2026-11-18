@@ -4,9 +4,6 @@ import json
 import hashlib
 import logging
 import shutil
-import tempfile
-import time
-import uuid
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import asdict, replace
@@ -20,7 +17,6 @@ from ..cad.reader import DxfCoordinateReport, DxfReader
 from ..config import AppSettings, load_settings, safe_project_name, validate_project_config
 from ..errors import (
     CadReadError,
-    ConfigurationError,
     CrsError,
     ExportError,
     ProviderError,
@@ -48,205 +44,10 @@ from ..models import (
 from ..providers import EcologyClient, LayerCatalog, OverpassClient, SpatialDataProvider, VWorldClient
 from ..qgis.project import write_qgis_project
 from ..report import GEOMETRY_POLICY, write_reports
-from ..security import redact_sensitive_text
 from ..web_map import write_web_map
 from .downloads import fetch_provider_groups
-
-
-def _redact(message: str | None, *secrets: str) -> str | None:
-    return redact_sensitive_text(message, *secrets)
-
-
-class _SecretFilter(logging.Filter):
-    def __init__(self, *secrets: str):
-        super().__init__()
-        self.secrets = tuple(secret for secret in secrets if secret)
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = _redact(str(record.msg), *self.secrets) or ""
-
-        def sanitized(value: object) -> object:
-            rendered = str(value)
-            redacted = _redact(rendered, *self.secrets) or ""
-            return redacted if redacted != rendered else value
-
-        if isinstance(record.args, tuple):
-            record.args = tuple(sanitized(arg) for arg in record.args)
-        elif isinstance(record.args, dict):
-            record.args = {key: sanitized(value) for key, value in record.args.items()}
-        return True
-
-
-def _logger(path: Path, *secrets: str) -> logging.Logger:
-    logger = logging.getLogger(f"routegis.{path.parents[1].name}")
-    logger.handlers.clear()
-    logger.setLevel(logging.DEBUG)
-    handler = logging.FileHandler(path, encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    handler.addFilter(_SecretFilter(*secrets))
-    logger.addHandler(handler)
-    logger.propagate = False
-    return logger
-
-
-def _close_project_logger(project_directory: Path) -> None:
-    logger = logging.getLogger(f"routegis.{project_directory.name}")
-    for handler in list(logger.handlers):
-        handler.close()
-        logger.removeHandler(handler)
-
-
-PROJECT_DIRECTORIES = (
-    "source",
-    "data",
-    "shp/route",
-    "shp/cadastral",
-    "shp/land",
-    "shp/ecology",
-    "shp/heritage",
-    "shp/water",
-    "shp/power",
-    "shp/landuse",
-    "shp/administrative",
-    "shp/facility",
-    "shp/source",
-    "style",
-    "reports",
-    "logs",
-)
-
-
-def _directories(project_directory: Path) -> None:
-    for relative in PROJECT_DIRECTORIES:
-        (project_directory / relative).mkdir(parents=True, exist_ok=True)
-
-
-def _validate_existing_project(project_directory: Path, project_name: str) -> None:
-    if not project_directory.exists():
-        return
-    if not project_directory.is_dir():
-        raise ConfigurationError(f"프로젝트 출력 경로가 폴더가 아닙니다: {project_directory}")
-    if not any(project_directory.iterdir()):
-        return
-    manifest = project_directory / "project_manifest.json"
-    if not manifest.is_file():
-        raise ConfigurationError(
-            f"기존 폴더를 덮어쓸 수 없습니다. RouteGIS 프로젝트가 아닙니다: {project_directory}"
-        )
-    try:
-        existing = json.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ConfigurationError(f"기존 RouteGIS Manifest를 읽을 수 없습니다: {manifest}") from exc
-    if existing.get("project") != project_name:
-        raise ConfigurationError(
-            f"같은 출력 폴더에 다른 RouteGIS 프로젝트가 있습니다: {project_directory}"
-        )
-
-
-def _staging_directory(project_directory: Path) -> Path:
-    project_directory.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(
-            prefix=f".{project_directory.name}.build-",
-            dir=project_directory.parent,
-        )
-    )
-    try:
-        _directories(staging)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-    return staging
-
-
-def _publish_project(staging: Path, project_directory: Path) -> None:
-    backup: Path | None = None
-    new_project = not project_directory.exists()
-    operation = "완성된 프로젝트 폴더 저장"
-    source, target = staging, project_directory
-    try:
-        _close_project_logger(project_directory)
-        if not new_project:
-            backup = project_directory.with_name(f".{project_directory.name}.backup-{uuid.uuid4().hex}")
-            operation = "기존 프로젝트 폴더 백업"
-            source, target = project_directory, backup
-            _replace_directory(project_directory, backup)
-        operation = "완성된 프로젝트 폴더 저장"
-        source, target = staging, project_directory
-        try:
-            _replace_directory(staging, project_directory)
-        except PermissionError as exc:
-            # Windows can deny renaming a directory while a reader scans a new
-            # artifact, even though every file is complete and still readable.
-            # Never use this fallback when replacing a previous project.
-            if not new_project or getattr(exc, "winerror", None) not in {5, 32, 33}:
-                raise
-            operation = "새 프로젝트 폴더로 완성된 파일 복사"
-            _copy_new_project(staging, project_directory)
-    except BaseException as exc:
-        try:
-            if project_directory.exists() and not staging.exists():
-                _replace_directory(project_directory, staging)
-            if backup is not None and backup.exists() and not project_directory.exists():
-                _replace_directory(backup, project_directory)
-        except OSError as rollback_error:
-            raise ConfigurationError(
-                "프로젝트 교체 실패 후 기존 결과를 복구할 수 없습니다.\n"
-                f"최초 오류: {_filesystem_error(exc)}\n"
-                f"복구 오류: {_filesystem_error(rollback_error)}\n"
-                f"기존 결과 백업: {backup}\n임시 결과: {staging}\n최종 위치: {project_directory}"
-            ) from rollback_error
-        if isinstance(exc, OSError):
-            raise ConfigurationError(
-                f"프로젝트 최종 저장에 실패했습니다.\n작업: {operation}\n"
-                f"원본: {source}\n대상: {target}\n원인: {_filesystem_error(exc)}\n"
-                "폴더 변경 권한 또는 다른 프로그램의 파일 사용 여부를 확인해 주세요.\n"
-                f"임시 결과 위치: {staging}"
-            ) from exc
-        raise
-    if backup is not None:
-        shutil.rmtree(backup, ignore_errors=True)
-
-
-def _filesystem_error(error: BaseException) -> str:
-    codes = ", ".join(
-        f"{name}={value}"
-        for name in ("winerror", "errno")
-        if (value := getattr(error, name, None)) is not None
-    )
-    return f"{type(error).__name__} ({codes}): {error}" if codes else f"{type(error).__name__}: {error}"
-
-
-def _copy_new_project(staging: Path, project_directory: Path) -> None:
-    # Claim an absent destination exclusively. A concurrent creator's directory
-    # must not be overwritten or removed, including if the copy later fails.
-    project_directory.mkdir()
-    try:
-        shutil.copytree(
-            staging,
-            project_directory,
-            dirs_exist_ok=True,
-            ignore=lambda directory, _names: ["project_manifest.json"] if Path(directory) == staging else [],
-        )
-        # An incomplete copy must not look like a reusable RouteGIS project.
-        manifest = staging / "project_manifest.json"
-        if manifest.is_file():
-            shutil.copy2(manifest, project_directory / manifest.name)
-    except BaseException:
-        shutil.rmtree(project_directory, ignore_errors=True)
-        raise
-    shutil.rmtree(staging, ignore_errors=True)
-
-
-def _replace_directory(source: Path, target: Path) -> None:
-    for attempt in range(5):
-        try:
-            source.replace(target)
-            return
-        except PermissionError:
-            if attempt == 4:
-                raise
-            time.sleep(0.1 * (2**attempt))
+from .project_log import _close_project_logger, _logger, _redact
+from .publish import _publish_project, _staging_directory, _validate_existing_project
 
 
 def _sha256(path: Path) -> str:
@@ -369,6 +170,224 @@ def _provider_contract_issues(
             )
         )
     return issues
+
+
+Report = Callable[[int, str], None]
+
+
+def _copy_source_drawing(config: ProjectConfig, project_directory: Path) -> tuple[Path, str]:
+    source_copy = project_directory / "source" / config.source_drawing.name
+    shutil.copy2(config.source_drawing, source_copy)
+    return source_copy, _sha256(source_copy)
+
+
+def _build_route(
+    config: ProjectConfig,
+    lines_by_layer: dict[str, list[LineString]],
+) -> RouteGeometry:
+    source_layers = tuple(sorted(lines_by_layer, key=str.casefold))
+    original_layer = create_linework_layer(lines_by_layer, config.source_crs)
+    original_layer.name = "linework_original"
+    original_layer.display_name = "원본 선형"
+    original_layer.category = "source"
+    transformed_layer = transform_layer(original_layer, config.output_crs)
+    for feature in transformed_layer.features:
+        feature.properties["length_m"] = feature.geometry.length
+    transformed_layer.name = "linework"
+    transformed_layer.display_name = "선형"
+    transformed_layer.category = "route"
+    return RouteGeometry(
+        original=original_layer,
+        transformed=transformed_layer,
+        source_layers=source_layers,
+        source_crs=config.source_crs,
+        output_crs=config.output_crs,
+    )
+
+
+def _judge_download(
+    definition: LayerDefinition,
+    outcome: DownloadResult | Exception,
+    aoi: SpatialLayer,
+    secrets: tuple[str, ...],
+    log: logging.Logger,
+) -> tuple[DownloadResult, list[ValidationIssue] | None]:
+    """Accept or reject one provider outcome; returns the result and its layer issues."""
+    layer_issues: list[ValidationIssue] | None = None
+    try:
+        if isinstance(outcome, Exception):
+            raise outcome
+        result = outcome
+        if result.layer_id != definition.id:
+            raise RouteGISError(
+                "공급자 결과 레이어 ID가 요청과 다릅니다: "
+                f"{result.layer_id} (예상 {definition.id})"
+            )
+        result.error = _redact(result.error, *secrets)
+        if result.status != "success":
+            result.status = "failed"
+            result.layer = None
+            result.feature_count = 0
+            if not result.error:
+                result.error = "공급자가 레이어를 완전하게 반환하지 않았습니다."
+            log.warning("레이어 다운로드 실패: %s: %s", definition.id, result.error)
+        elif result.layer is None:
+            result.status = "failed"
+            result.feature_count = 0
+            result.error = "공급자가 완전한 레이어를 반환하지 않았습니다."
+            log.warning("레이어 다운로드 실패: %s: %s", definition.id, result.error)
+        else:
+            result.feature_count = len(result.layer.features)
+            layer_issues = _provider_contract_issues(definition, result.layer, aoi)
+            if not any(issue.severity == "error" for issue in layer_issues):
+                layer_issues += validate_layer(result.layer) + validate_layer_intersects_aoi(result.layer, aoi)
+            validation_errors = [
+                issue for issue in layer_issues if issue.severity == "error"
+            ]
+            if validation_errors:
+                result.status = "failed"
+                details = "; ".join(
+                    f"{issue.code}: {issue.message}"
+                    for issue in validation_errors[:3]
+                )
+                omitted = len(validation_errors) - 3
+                suffix = f" (그 외 {omitted}건)" if omitted > 0 else ""
+                result.error = f"Geometry 또는 좌표계 검증에 실패했습니다: {details}{suffix}"
+                result.layer = None
+                result.feature_count = 0
+    except Exception as exc:
+        log.warning("레이어 다운로드 실패: %s: %s", definition.id, exc)
+        result = DownloadResult(layer_id=definition.id, status="failed", error=_redact(str(exc), *secrets))
+    return result, layer_issues
+
+
+def _export_layers_and_metadata(
+    definitions: list[LayerDefinition],
+    downloads: list[DownloadResult],
+    route_layer: SpatialLayer,
+    aoi: SpatialLayer,
+) -> tuple[list[SpatialLayer], Any]:
+    definitions_by_id = {definition.id: definition for definition in definitions}
+    successful_results = [
+        result
+        for result in downloads
+        if result.status == "success" and result.layer is not None
+    ]
+    successful_layers: list[SpatialLayer] = []
+    for result in successful_results:
+        definition = definitions_by_id.get(result.layer_id)
+        layer = result.layer
+        if definition is None or layer is None:
+            raise ExportError(f"공급자 레이어 ID가 선택 목록과 일치하지 않습니다: {result.layer_id}")
+        if layer.name != definition.id or layer.category != definition.category:
+            raise ExportError(
+                "공급자 레이어 메타데이터가 선택 정의와 일치하지 않습니다: "
+                f"{result.layer_id}"
+            )
+        successful_layers.append(
+            replace(
+                layer,
+                name=definition.id,
+                display_name=definition.name,
+                category=definition.category,
+            )
+        )
+    layer_metadata = MappingProxyType(
+        {
+            result.layer_id: MappingProxyType(
+                _artifact_metadata(definitions_by_id[result.layer_id])
+            )
+            for result in successful_results
+        }
+    )
+    return [route_layer, aoi, *successful_layers], layer_metadata
+
+
+def _shapefile_fallback_issues(
+    layers: list[SpatialLayer], shapefile_mappings: Any
+) -> list[ValidationIssue]:
+    return [
+        ValidationIssue(
+            severity="warning",
+            code="SHAPEFILE_ENCODING_FALLBACK",
+            message=(
+                "EUC-KR로 표현할 수 없는 속성값이 있어 Shapefile 대신 "
+                "GeoPackage를 사용합니다."
+            ),
+            layer=layer.name,
+        )
+        for layer in layers
+        if layer.name not in shapefile_mappings
+    ]
+
+
+def _manifest_payload(
+    config: ProjectConfig,
+    *,
+    state: PipelineState,
+    source_digest: str,
+    route: RouteGeometry,
+    aoi: SpatialLayer,
+    definitions: list[LayerDefinition],
+    downloads: list[DownloadResult],
+    project_file: Path,
+    web_map_html: Path,
+) -> dict[str, Any]:
+    definitions_by_id = {definition.id: definition for definition in definitions}
+    return {
+        "project": config.project_name,
+        "status": state.value,
+        "source": {
+            "filename": config.source_drawing.name,
+            "sha256": source_digest,
+            "layers": list(route.source_layers),
+        },
+        "route": {
+            "source_crs": config.source_crs,
+            "output_crs": config.output_crs,
+            "buffer": config.buffer_distance,
+            "length_m": route.length,
+            "bbox": route.bbox,
+            "aoi_bbox": aoi.bounds,
+            "chord_tolerance": config.chord_tolerance,
+        },
+        "layers": [
+            _download_payload(result, definitions_by_id[result.layer_id])
+            for result in downloads
+        ],
+        "outputs": {
+            "geopackage": "data/project.gpkg",
+            "project": project_file.name,
+            "report": "reports/processing_report.html",
+            "web_map": web_map_html.name,
+        },
+    }
+
+
+def _report_payload(
+    config: ProjectConfig,
+    *,
+    state: PipelineState,
+    route: RouteGeometry,
+    aoi: SpatialLayer,
+    manifest_payload: dict[str, Any],
+    issues: list[ValidationIssue],
+    project_file: Path,
+    web_map_html: Path,
+) -> dict[str, Any]:
+    return {
+        "project": config.project_name,
+        "status": state.value,
+        "source": config.source_drawing.name,
+        "route_length_m": route.length,
+        "crs": config.output_crs,
+        "buffer_m": config.buffer_distance,
+        "aoi_area_m2": aoi.features[0].geometry.area,
+        "geometry_policy": GEOMETRY_POLICY,
+        "layers": manifest_payload["layers"],
+        "issues": [asdict(issue) for issue in issues],
+        "outputs": ["project.gpkg", project_file.name, web_map_html.name, "project_manifest.json"],
+    }
 
 
 class ProjectService:
@@ -517,6 +536,73 @@ class ProjectService:
                 setattr(result, attribute, project_directory / path.relative_to(staging))
         return result
 
+    def _read_linework(
+        self,
+        config: ProjectConfig,
+        source_copy: Path,
+        report: Report,
+        log: logging.Logger,
+    ) -> tuple[dict[str, list[LineString]], list[ValidationIssue]]:
+        reader = DxfReader(source_copy, config.chord_tolerance,
+                           on_progress=lambda percent, message: report(8 + 7 * percent // 100, message))
+        lines_by_layer = reader.lines_by_layer()
+        cad_warnings = _cad_skip_issues(reader)
+        self.last_cad_warnings = tuple(cad_warnings)
+        for issue in cad_warnings:
+            log.warning("CAD 객체 제외: %s: %s", issue.layer, issue.message)
+        if not lines_by_layer:
+            if reader.skipped_entities:
+                raise CadReadError("도면의 지원 선 객체가 모두 길이 0이라 프로젝트를 생성할 수 없습니다.")
+            raise RouteGISError("도면에 지원하는 선형 객체가 없습니다.")
+        return lines_by_layer, cad_warnings
+
+    def _download_layers(
+        self,
+        definitions: list[LayerDefinition],
+        aoi: SpatialLayer,
+        issues: list[ValidationIssue],
+        *,
+        api_key: str,
+        data_go_kr_service_key: str,
+        provider: SpatialDataProvider | None,
+        report: Report,
+        log: logging.Logger,
+        check_cancelled: Callable[[], None] | None,
+    ) -> list[DownloadResult]:
+        secrets = (api_key, data_go_kr_service_key)
+        completed: dict[int, DownloadResult] = {}
+        download_issues: dict[int, list[ValidationIssue]] = {}
+        labels = [f"[{index + 1}/{len(definitions)}] {definition.name} [{definition.provider}]"
+                  for index, definition in enumerate(definitions)]
+
+        def download_progress(index: int, message: str) -> None:
+            report(30 + 45 * len(completed) // len(definitions), f"{labels[index]} · {message}")
+
+        def accept_download(index: int, outcome: DownloadResult | Exception) -> None:
+            result, layer_issues = _judge_download(definitions[index], outcome, aoi, secrets, log)
+            if layer_issues is not None:
+                download_issues[index] = layer_issues
+            completed[index] = result
+            detail = (f"성공 · {result.feature_count}개" if result.status == "success"
+                      else f"실패 · {result.error or '상세 오류 없음'}")
+            report(30 + 45 * len(completed) // len(definitions),
+                   f"{labels[index]} {detail} · API 요청 {result.request_count}회 · 완료 타일 {result.successful_tile_count}개")
+
+        fetch_provider_groups(
+            definitions, aoi, provider=provider,
+            create_provider=lambda name, progress, check: self._provider(
+                name, api_key=api_key, data_go_kr_service_key=data_go_kr_service_key,
+                on_progress=progress, check_cancelled=check,
+            ),
+            on_progress=download_progress, on_result=accept_download,
+            on_close_error=lambda exc: log.warning("공급자 종료 실패: %s", exc),
+            check_cancelled=check_cancelled,
+        )
+        downloads = [completed[index] for index in range(len(definitions))]
+        for index in range(len(definitions)):
+            issues.extend(download_issues.get(index, []))
+        return downloads
+
     def _build_in_directory(
         self,
         config: ProjectConfig,
@@ -537,41 +623,13 @@ class ProjectService:
             on_progress(percent, message)
 
         report(3, "원본 도면 복사 및 확인 중")
-        source_copy = project_directory / "source" / config.source_drawing.name
-        shutil.copy2(config.source_drawing, source_copy)
-        source_digest = _sha256(source_copy)
+        source_copy, source_digest = _copy_source_drawing(config, project_directory)
 
         report(8, "DXF 도면의 선 객체 읽는 중")
-        reader = DxfReader(source_copy, config.chord_tolerance,
-                           on_progress=lambda percent, message: report(8 + 7 * percent // 100, message))
-        lines_by_layer = reader.lines_by_layer()
-        cad_warnings = _cad_skip_issues(reader)
-        self.last_cad_warnings = tuple(cad_warnings)
-        for issue in cad_warnings:
-            log.warning("CAD 객체 제외: %s: %s", issue.layer, issue.message)
-        if not lines_by_layer:
-            if reader.skipped_entities:
-                raise CadReadError("도면의 지원 선 객체가 모두 길이 0이라 프로젝트를 생성할 수 없습니다.")
-            raise RouteGISError("도면에 지원하는 선형 객체가 없습니다.")
-        source_layers = tuple(sorted(lines_by_layer, key=str.casefold))
+        lines_by_layer, cad_warnings = self._read_linework(config, source_copy, report, log)
         report(16, "선형 레이어 생성 및 좌표계 변환 중")
-        original_layer = create_linework_layer(lines_by_layer, config.source_crs)
-        original_layer.name = "linework_original"
-        original_layer.display_name = "원본 선형"
-        original_layer.category = "source"
-        transformed_layer = transform_layer(original_layer, config.output_crs)
-        for feature in transformed_layer.features:
-            feature.properties["length_m"] = feature.geometry.length
-        transformed_layer.name = "linework"
-        transformed_layer.display_name = "선형"
-        transformed_layer.category = "route"
-        route = RouteGeometry(
-            original=original_layer,
-            transformed=transformed_layer,
-            source_layers=source_layers,
-            source_crs=config.source_crs,
-            output_crs=config.output_crs,
-        )
+        route = _build_route(config, lines_by_layer)
+        transformed_layer = route.transformed
         report(22, "분석범위 Buffer 생성 중")
         aoi = create_aoi_layer(transformed_layer, config.buffer_distance)
         report(27, "선형·분석범위 Geometry 및 좌표계 검증 중")
@@ -583,115 +641,13 @@ class ProjectService:
         downloads: list[DownloadResult] = []
         report(30, f"공간정보 {len(definitions)}개 수집 시작")
         if definitions:
-            completed: dict[int, DownloadResult] = {}
-            download_issues: dict[int, list[ValidationIssue]] = {}
-            labels = [f"[{index + 1}/{len(definitions)}] {definition.name} [{definition.provider}]"
-                      for index, definition in enumerate(definitions)]
-
-            def download_progress(index: int, message: str) -> None:
-                report(30 + 45 * len(completed) // len(definitions), f"{labels[index]} · {message}")
-
-            def accept_download(index: int, outcome: DownloadResult | Exception) -> None:
-                definition = definitions[index]
-                try:
-                    if isinstance(outcome, Exception):
-                        raise outcome
-                    result = outcome
-                    if result.layer_id != definition.id:
-                        raise RouteGISError(
-                            "공급자 결과 레이어 ID가 요청과 다릅니다: "
-                            f"{result.layer_id} (예상 {definition.id})"
-                        )
-                    result.error = _redact(result.error, *secrets)
-                    if result.status != "success":
-                        result.status = "failed"
-                        result.layer = None
-                        result.feature_count = 0
-                        if not result.error:
-                            result.error = "공급자가 레이어를 완전하게 반환하지 않았습니다."
-                        log.warning("레이어 다운로드 실패: %s: %s", definition.id, result.error)
-                    elif result.layer is None:
-                        result.status = "failed"
-                        result.feature_count = 0
-                        result.error = "공급자가 완전한 레이어를 반환하지 않았습니다."
-                        log.warning("레이어 다운로드 실패: %s: %s", definition.id, result.error)
-                    else:
-                        result.feature_count = len(result.layer.features)
-                        layer_issues = _provider_contract_issues(definition, result.layer, aoi)
-                        if not any(issue.severity == "error" for issue in layer_issues):
-                            layer_issues += validate_layer(result.layer) + validate_layer_intersects_aoi(result.layer, aoi)
-                        download_issues[index] = layer_issues
-                        validation_errors = [
-                            issue for issue in layer_issues if issue.severity == "error"
-                        ]
-                        if validation_errors:
-                            result.status = "failed"
-                            details = "; ".join(
-                                f"{issue.code}: {issue.message}"
-                                for issue in validation_errors[:3]
-                            )
-                            omitted = len(validation_errors) - 3
-                            suffix = f" (그 외 {omitted}건)" if omitted > 0 else ""
-                            result.error = f"Geometry 또는 좌표계 검증에 실패했습니다: {details}{suffix}"
-                            result.layer = None
-                            result.feature_count = 0
-                except Exception as exc:
-                    log.warning("레이어 다운로드 실패: %s: %s", definition.id, exc)
-                    result = DownloadResult(layer_id=definition.id, status="failed", error=_redact(str(exc), *secrets))
-                completed[index] = result
-                detail = (f"성공 · {result.feature_count}개" if result.status == "success"
-                          else f"실패 · {result.error or '상세 오류 없음'}")
-                report(30 + 45 * len(completed) // len(definitions),
-                       f"{labels[index]} {detail} · API 요청 {result.request_count}회 · 완료 타일 {result.successful_tile_count}개")
-
-            fetch_provider_groups(
-                definitions, aoi, provider=provider,
-                create_provider=lambda name, progress, check: self._provider(
-                    name, api_key=api_key, data_go_kr_service_key=data_go_kr_service_key,
-                    on_progress=progress, check_cancelled=check,
-                ),
-                on_progress=download_progress, on_result=accept_download,
-                on_close_error=lambda exc: log.warning("공급자 종료 실패: %s", exc),
-                check_cancelled=check_cancelled,
+            downloads = self._download_layers(
+                definitions, aoi, issues,
+                api_key=api_key, data_go_kr_service_key=data_go_kr_service_key,
+                provider=provider, report=report, log=log, check_cancelled=check_cancelled,
             )
-            downloads = [completed[index] for index in range(len(definitions))]
-            for index in range(len(definitions)):
-                issues.extend(download_issues.get(index, []))
 
-        definitions_by_id = {definition.id: definition for definition in definitions}
-        successful_results = [
-            result
-            for result in downloads
-            if result.status == "success" and result.layer is not None
-        ]
-        successful_layers: list[SpatialLayer] = []
-        for result in successful_results:
-            definition = definitions_by_id.get(result.layer_id)
-            layer = result.layer
-            if definition is None or layer is None:
-                raise ExportError(f"공급자 레이어 ID가 선택 목록과 일치하지 않습니다: {result.layer_id}")
-            if layer.name != definition.id or layer.category != definition.category:
-                raise ExportError(
-                    "공급자 레이어 메타데이터가 선택 정의와 일치하지 않습니다: "
-                    f"{result.layer_id}"
-                )
-            successful_layers.append(
-                replace(
-                    layer,
-                    name=definition.id,
-                    display_name=definition.name,
-                    category=definition.category,
-                )
-            )
-        layer_metadata = MappingProxyType(
-            {
-                result.layer_id: MappingProxyType(
-                    _artifact_metadata(definitions_by_id[result.layer_id])
-                )
-                for result in successful_results
-            }
-        )
-        layers = [transformed_layer, aoi, *successful_layers]
+        layers, layer_metadata = _export_layers_and_metadata(definitions, downloads, transformed_layer, aoi)
         report(78, "GeoPackage 및 Shapefile 저장 중")
         geopackage, shapefile_mappings = export_layers(
             project_directory,
@@ -700,19 +656,7 @@ class ProjectService:
             layer_metadata=layer_metadata,
         )
         if config.export_shapefile:
-            for layer in layers:
-                if layer.name not in shapefile_mappings:
-                    issues.append(
-                        ValidationIssue(
-                            severity="warning",
-                            code="SHAPEFILE_ENCODING_FALLBACK",
-                            message=(
-                                "EUC-KR로 표현할 수 없는 속성값이 있어 Shapefile 대신 "
-                                "GeoPackage를 사용합니다."
-                            ),
-                            layer=layer.name,
-                        )
-                    )
+            issues.extend(_shapefile_fallback_issues(layers, shapefile_mappings))
         report(88, "QGIS 프로젝트 구성 및 스타일 저장 중")
         project_file = write_qgis_project(
             project_directory / f"{safe_project_name(config.project_name)}.qgz",
@@ -738,49 +682,17 @@ class ProjectService:
             else PipelineState.COMPLETED
         )
         report(95, "Manifest 및 처리 보고서 작성 중")
-        manifest_payload = {
-            "project": config.project_name,
-            "status": state.value,
-            "source": {
-                "filename": config.source_drawing.name,
-                "sha256": source_digest,
-                "layers": list(route.source_layers),
-            },
-            "route": {
-                "source_crs": config.source_crs,
-                "output_crs": config.output_crs,
-                "buffer": config.buffer_distance,
-                "length_m": route.length,
-                "bbox": route.bbox,
-                "aoi_bbox": aoi.bounds,
-                "chord_tolerance": config.chord_tolerance,
-            },
-            "layers": [
-                _download_payload(result, definitions_by_id[result.layer_id])
-                for result in downloads
-            ],
-            "outputs": {
-                "geopackage": "data/project.gpkg",
-                "project": project_file.name,
-                "report": "reports/processing_report.html",
-                "web_map": web_map_html.name,
-            },
-        }
+        manifest_payload = _manifest_payload(
+            config, state=state, source_digest=source_digest, route=route, aoi=aoi,
+            definitions=definitions, downloads=downloads,
+            project_file=project_file, web_map_html=web_map_html,
+        )
         manifest = project_directory / "project_manifest.json"
         manifest.write_text(json.dumps(manifest_payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-        report_payload = {
-            "project": config.project_name,
-            "status": state.value,
-            "source": config.source_drawing.name,
-            "route_length_m": route.length,
-            "crs": config.output_crs,
-            "buffer_m": config.buffer_distance,
-            "aoi_area_m2": aoi.features[0].geometry.area,
-            "geometry_policy": GEOMETRY_POLICY,
-            "layers": manifest_payload["layers"],
-            "issues": [asdict(issue) for issue in issues],
-            "outputs": ["project.gpkg", project_file.name, web_map_html.name, "project_manifest.json"],
-        }
+        report_payload = _report_payload(
+            config, state=state, route=route, aoi=aoi, manifest_payload=manifest_payload,
+            issues=issues, project_file=project_file, web_map_html=web_map_html,
+        )
         report_html, _ = write_reports(project_directory / "reports", report_payload)
         log.info("프로젝트 생성 상태: %s", state.value)
         _close_project_logger(project_directory)

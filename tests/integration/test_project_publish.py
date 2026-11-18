@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from routegis.app import project_service as module
+from routegis.app import publish as module
 from routegis.app.project_service import ProjectService
 from routegis.errors import ConfigurationError
 from routegis.models import ProjectConfig
