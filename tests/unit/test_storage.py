@@ -10,7 +10,7 @@ from routegis.gis.export import export_layers, shapefile_export_path
 from routegis.gis.gpkg import write_geopackage
 from routegis.gis.shapefile import SHAPEFILE_SUFFIXES, write_shapefile
 from routegis.models import SpatialFeature, SpatialLayer
-from routegis.qgis.project_schema import _vector_source
+from routegis.qgis.project_schema import vector_source
 
 
 def _layers():
@@ -170,7 +170,7 @@ def test_vector_source_supports_relative_project_directory(
     route, _ = _layers()
     geopackage, _ = export_layers(Path("relative-project"), [route])
 
-    source = _vector_source(Path("relative-project"), geopackage, route)
+    source = vector_source(Path("relative-project"), geopackage, route)
 
     assert source.relative_uri == "shp/route/route_centerline.shp"
     assert Path(source.absolute_uri).is_absolute()

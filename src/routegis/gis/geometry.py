@@ -1,25 +1,11 @@
 from __future__ import annotations
 
-from shapely.geometry import LineString, Polygon, box
+from shapely.geometry import LineString
 from shapely.ops import unary_union
 
 from ..errors import CrsError
 from ..models import SpatialFeature, SpatialLayer
 from .crs import validate_projected_metre_crs
-
-
-def create_route_layer(route: LineString, crs: str, source_layer: str) -> SpatialLayer:
-    if route.is_empty or route.length <= 0:
-        raise CrsError("노선 길이가 0이므로 분석할 수 없습니다.")
-    return SpatialLayer(
-        name="route_centerline",
-        display_name="노선 중심선",
-        crs=crs,
-        geometry_type="LineString",
-        category="route",
-        features=[SpatialFeature(route, {"source_layer": source_layer, "length": route.length}, "route-1")],
-        source="cad",
-    )
 
 
 def create_linework_layer(
@@ -55,28 +41,15 @@ def create_linework_layer(
 def create_aoi_layer(
     route_layer: SpatialLayer,
     distance: float,
-    mode: str = "buffer",
-    custom_polygon: Polygon | None = None,
 ) -> SpatialLayer:
     validate_projected_metre_crs(route_layer.crs)
     if distance <= 0:
         raise CrsError("사업구간 주변 범위는 0보다 커야 합니다.")
     if not route_layer.features:
         raise CrsError("사업구간 주변 범위를 만들 선형 객체가 없습니다.")
-    if mode == "buffer":
-        # Buffer each line before dissolving: buffering the whole noded CAD
-        # network can exhaust GEOS memory when thousands of offsets overlap.
-        geometry = unary_union([feature.geometry.buffer(distance) for feature in route_layer.features])
-    elif mode == "bbox":
-        bounds = route_layer.bounds
-        if bounds is None:
-            raise CrsError("분석 범위를 생성하지 못했습니다.")
-        min_x, min_y, max_x, max_y = bounds
-        geometry = box(min_x - distance, min_y - distance, max_x + distance, max_y + distance)
-    elif mode == "polygon" and custom_polygon is not None:
-        geometry = custom_polygon
-    else:
-        raise CrsError("지원하지 않는 분석 범위 방식입니다.")
+    # Buffer each line before dissolving: buffering the whole noded CAD
+    # network can exhaust GEOS memory when thousands of offsets overlap.
+    geometry = unary_union([feature.geometry.buffer(distance) for feature in route_layer.features])
     if geometry.is_empty or not geometry.is_valid or geometry.area <= 0:
         raise CrsError("분석 범위를 생성하지 못했습니다.")
     return SpatialLayer(
@@ -88,7 +61,7 @@ def create_aoi_layer(
         features=[
             SpatialFeature(
                 geometry,
-                {"mode": mode, "distance_m": distance, "area_m2": geometry.area},
+                {"mode": "buffer", "distance_m": distance, "area_m2": geometry.area},
                 "aoi-1",
             )
         ],

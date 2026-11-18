@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,8 +23,6 @@ class LayerInventory:
     entity_types: tuple[str, ...]
     entity_count: int
     total_length: float
-    connected_ratio: float
-    score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -149,30 +147,16 @@ class DxfReader:
             unit_name=unit_name(units),
         )
 
-    def inventory(self, snap_tolerance: float = 0.1) -> list[LayerInventory]:
+    def inventory(self) -> list[LayerInventory]:
         inventory: list[LayerInventory] = []
         for name, entries in self._scan().items():
             lines = [line for _entity_type, line in entries]
-            endpoint_counts: Counter[tuple[int, int]] = Counter()
-            scale = 1.0 / max(snap_tolerance, 1e-12)
-            for line in lines:
-                for x, y in (line.coords[0], line.coords[-1]):
-                    endpoint_counts[(round(x * scale), round(y * scale))] += 1
-            connected_endpoints = sum(count for count in endpoint_counts.values() if count > 1)
-            connected_ratio = connected_endpoints / max(len(lines) * 2, 1)
             inventory.append(
                 LayerInventory(
                     name=name,
                     entity_types=tuple(sorted({entity_type for entity_type, _line in entries})),
                     entity_count=len(lines),
                     total_length=sum(line.length for line in lines),
-                    connected_ratio=connected_ratio,
                 )
             )
         return sorted(inventory, key=lambda item: item.name.casefold())
-
-    def read_layer(self, layer_name: str) -> list[LineString]:
-        lines = self.lines_by_layer().get(layer_name, [])
-        if not lines:
-            raise CadReadError(f"선형 객체가 있는 CAD 레이어를 찾을 수 없습니다: {layer_name}")
-        return lines

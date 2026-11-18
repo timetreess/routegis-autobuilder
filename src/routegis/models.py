@@ -9,34 +9,21 @@ from shapely.geometry.base import BaseGeometry
 
 
 class PipelineState(str, Enum):
-    NEW = "NEW"
-    CAD_LOADED = "CAD_LOADED"
-    ROUTE_SELECTED = "ROUTE_SELECTED"
-    CRS_CONFIRMED = "CRS_CONFIRMED"
-    AOI_CREATED = "AOI_CREATED"
-    DOWNLOADING = "DOWNLOADING"
-    VALIDATING = "VALIDATING"
-    EXPORTING = "EXPORTING"
     COMPLETED = "COMPLETED"
     COMPLETED_WITH_WARNINGS = "COMPLETED_WITH_WARNINGS"
-    FAILED = "FAILED"
 
 
 @dataclass(frozen=True)
 class ProjectConfig:
     project_name: str
     source_drawing: Path
-    source_layers: tuple[str, ...]
     source_crs: str
     output_crs: str
     buffer_distance: float
     selected_layers: tuple[str, ...]
     output_directory: Path
     export_shapefile: bool = True
-    snap_tolerance: float = 0.1
     chord_tolerance: float = 0.1
-    dwg_converter: Path | None = None
-    project_type: str = "linear"
 
 
 @dataclass(frozen=True)
@@ -111,7 +98,6 @@ class DownloadResult:
     status: str
     feature_count: int = 0
     layer: SpatialLayer | None = None
-    output: str | None = None
     error: str | None = None
     initial_tile_count: int = 0
     request_count: int = 0

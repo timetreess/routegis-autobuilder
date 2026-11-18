@@ -52,13 +52,13 @@ def _assert_plugin_build(project_root, plugin_parent, package, output_directory)
     setattr(sys.modules["qgis.core"], "QgsTask", Task)
     sys.path.insert(0, plugin_parent)
     wizard = importlib.import_module(f"{package}.wizard")
-    fixture_provider = importlib.import_module(f"{package}.routegis.cli").FixtureProvider
+    fixture_provider = importlib.import_module(f"{package}.routegis.providers.fixture").FixtureProvider
     config = wizard.ProjectConfig(
         project_name="Upgrade regression",
         source_drawing=Path(project_root) / "tests" / "fixtures" / "sample_route.dxf",
-        source_layers=(), source_crs="EPSG:5186", output_crs="EPSG:5186",
+        source_crs="EPSG:5186", output_crs="EPSG:5186",
         buffer_distance=1000, selected_layers=("land_ownership",),
-        output_directory=Path(output_directory), project_type="non_linear",
+        output_directory=Path(output_directory),
     )
     service = wizard.ProjectService()
     real_build = service.build
@@ -82,8 +82,23 @@ def _assert_plugin_build(project_root, plugin_parent, package, output_directory)
         service.settings, config.source_drawing, "경기도",
     )
     assert analysis.run(), analysis.error
-    assert analysis.result["report"] is not None
+    assert analysis.result["analysis"].coordinate_report is not None
     assert analysis.progress[0] == 0 and analysis.progress[-1] == 80
+
+    # A drawing without supported linework is a normal result, not a crash:
+    # the Wizard then explains that no LINE/POLYLINE/LWPOLYLINE/ARC was found.
+    import ezdxf
+
+    text_only = Path(output_directory) / "text_only.dxf"
+    text_only.parent.mkdir(parents=True, exist_ok=True)
+    document = ezdxf.new()
+    document.modelspace().add_text("주석", dxfattribs={"layer": "TEXT"})
+    document.saveas(text_only)
+    empty = wizard.DrawingAnalysisTask(service.settings, text_only, "경기도")
+    assert empty.run(), empty.error
+    assert empty.result["analysis"].candidates == []
+    assert empty.result["analysis"].coordinate_report is None
+    assert empty.result["recommendations"] == []
 
     # Cancellation before worker dispatch must not publish partial results.
     cancelled = wizard.ProjectBuildTask(service, config, api_key="", data_go_kr_service_key="")

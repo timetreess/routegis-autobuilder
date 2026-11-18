@@ -77,7 +77,7 @@ def redact_sensitive_text(
     if message is None:
         return None
     redacted = str(message)
-    for secret in dict.fromkeys(value for secret in secrets for value in (secret, unquote(secret))):
+    for secret in dict.fromkeys(form for given in secrets for form in (given, unquote(given))):
         if not secret:
             continue
         forms = sorted(

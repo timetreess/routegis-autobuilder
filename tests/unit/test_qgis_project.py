@@ -6,38 +6,12 @@ import pytest
 from shapely.geometry import LineString
 
 from routegis.qgis import project as project_module
-from routegis.qgis.project import _layer_id
+from routegis.qgis.project_schema import layer_id
 from routegis.models import SpatialFeature, SpatialLayer
 
 
 def test_layer_id_remains_stable_when_sha1_is_not_used_for_security() -> None:
-    assert _layer_id("route") == "route_fc166eb81361"
-
-
-def test_native_writer_success_still_copies_style_artifacts(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    def native_writer(path: Path, *_args, **_kwargs) -> bool:
-        path.write_bytes(b"native project")
-        return True
-
-    monkeypatch.setattr(project_module, "_native_project", native_writer)
-
-    project_module.write_qgis_project(
-        tmp_path / "native.qgz",
-        "Native project",
-        tmp_path / "data" / "custom.gpkg",
-        [],
-        tmp_path / "source" / "route.dxf",
-        "EPSG:5186",
-    )
-
-    expected = {
-        path.name
-        for path in (project_module.resource_root() / "styles").glob("*.qml")
-    }
-    assert {path.name for path in (tmp_path / "style").glob("*.qml")} == expected
+    assert layer_id("route") == "route_fc166eb81361"
 
 
 def test_headless_writer_uses_supplied_project_relative_paths(
@@ -47,7 +21,6 @@ def test_headless_writer_uses_supplied_project_relative_paths(
     project_directory = tmp_path / "project"
     geopackage = project_directory / "assets" / "custom.gpkg"
     source_drawing = project_directory / "input" / "actual.dxf"
-    monkeypatch.setattr(project_module, "_native_project", lambda *_args, **_kwargs: False)
 
     project_file = project_module.write_qgis_project(
         project_directory / "relative.qgz",
@@ -105,7 +78,6 @@ def test_headless_writer_uses_supplied_project_relative_paths(
 def test_group_marks_no_applicable_features_only_when_all_member_layers_are_empty(
     tmp_path: Path, monkeypatch, feature_counts, expected_name,
 ):
-    monkeypatch.setattr(project_module, "_native_project", lambda *_args, **_kwargs: False)
     line = LineString([(200000, 489013), (201000, 489013)])
     route = SpatialLayer(
         "linework", "선형", "EPSG:5186", "LineString", "route",
@@ -130,3 +102,19 @@ def test_group_marks_no_applicable_features_only_when_all_member_layers_are_empt
     expected_names[3] = expected_name
     assert [group.attrib["name"] for group in groups] == expected_names
     assert len(groups[3].findall("./layer-tree-layer")) == len(feature_counts)
+
+
+def test_writer_generates_style_files_from_shared_style_data(tmp_path: Path) -> None:
+    from routegis.styles import STYLES
+
+    project_module.write_qgis_project(
+        tmp_path / "styled.qgz",
+        "Styled project",
+        tmp_path / "data" / "custom.gpkg",
+        [SpatialLayer("custom_layer", "Custom", "EPSG:5186", "Polygon", "facility")],
+        tmp_path / "source" / "route.dxf",
+        "EPSG:5186",
+    )
+
+    expected = {key for key in STYLES if not key.startswith("default_")}
+    assert {path.stem for path in (tmp_path / "style").glob("*.qml")} == expected

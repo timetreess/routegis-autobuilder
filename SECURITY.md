@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest published `0.2.x` release.
+Security fixes are provided for the latest published release only. Earlier versions do not receive fixes; install the newest plugin ZIP from the [releases page](https://github.com/timetreess/routegis-autobuilder/releases/latest).
 
 ## Reporting a vulnerability
 

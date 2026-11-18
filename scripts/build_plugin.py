@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from email.parser import Parser
 from pathlib import Path
@@ -97,31 +97,35 @@ def _read_metadata(path: Path) -> PluginMetadata:
     )
 
 
-def _version_in(path: Path, pattern: str) -> str:
-    match = re.search(pattern, path.read_text(encoding="utf-8"), re.MULTILINE)
+def _source_version() -> str:
+    """Return the single release version, ``routegis.__version__``."""
+    path = PROJECT_ROOT / "src" / "routegis" / "__init__.py"
+    match = re.search(r'^__version__ = "([^"]+)"$', path.read_text(encoding="utf-8"), re.MULTILINE)
     if match is None:
         raise ReleasePackageError(f"Version not found: {path}")
     return match.group(1)
 
 
-def _assert_versions(metadata: PluginMetadata) -> None:
-    versions = {
-        metadata.version,
-        _version_in(PROJECT_ROOT / "pyproject.toml", r'^version = "([^"]+)"$'),
-        _version_in(PROJECT_ROOT / "src" / "routegis" / "__init__.py", r'^__version__ = "([^"]+)"$'),
-        _version_in(PROJECT_ROOT / "tests" / "manual" / "qgis_smoke.py", r'^EXPECTED_VERSION = "([^"]+)"$'),
-    }
-    if len(versions) != 1:
-        raise ReleasePackageError(f"Release versions differ: {sorted(versions)}")
-    project_python = _version_in(
-        PROJECT_ROOT / "pyproject.toml",
-        r'^requires-python = ">=([^"]+)"$',
-    )
-    if project_python != MINIMUM_PYTHON_VERSION:
+def _assert_project_configuration() -> None:
+    pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    if re.search(r"^version\s*=\s*\"", pyproject, re.MULTILINE) or 'dynamic = ["version"]' not in pyproject:
+        raise ReleasePackageError("pyproject.toml must take its version from routegis.__version__")
+    match = re.search(r'^requires-python = ">=([^"]+)"$', pyproject, re.MULTILINE)
+    if match is None or match.group(1) != MINIMUM_PYTHON_VERSION:
         raise ReleasePackageError(
-            "Minimum Python versions differ: "
-            f"{project_python} != {MINIMUM_PYTHON_VERSION}"
+            f"Minimum Python versions differ: {match and match.group(1)} != {MINIMUM_PYTHON_VERSION}"
         )
+
+
+def _stamp_metadata_version(path: Path, version: str) -> None:
+    """Write the release version into a staged metadata.txt and verify it."""
+    text = path.read_text(encoding="utf-8")
+    stamped, count = re.subn(r"^version=.*$", f"version={version}", text, count=1, flags=re.MULTILINE)
+    if count != 1:
+        raise ReleasePackageError(f"version= line not found in {path}")
+    _ = path.write_text(stamped, encoding="utf-8", newline="")
+    if _read_metadata(path).version != version:
+        raise ReleasePackageError(f"Staged metadata version is not {version}")
 
 
 def _copy_release_sources(destination: Path) -> None:
@@ -262,8 +266,9 @@ def _write_repository_xml(metadata: PluginMetadata, archive: Path, output: Path)
 
 
 def main() -> int:
-    metadata = _read_metadata(PROJECT_ROOT / "plugin" / "metadata.txt")
-    _assert_versions(metadata)
+    _assert_project_configuration()
+    version = _source_version()
+    metadata = replace(_read_metadata(PROJECT_ROOT / "plugin" / "metadata.txt"), version=version)
     dist = PROJECT_ROOT / "dist"
     dist.mkdir(exist_ok=True)
     archive = dist / f"{PLUGIN_DIRECTORY_NAME}.{metadata.version}.zip"
@@ -272,6 +277,7 @@ def main() -> int:
         staged_plugin = Path(temporary) / PLUGIN_DIRECTORY_NAME
         staged_plugin.mkdir()
         _copy_release_sources(staged_plugin)
+        _stamp_metadata_version(staged_plugin / "metadata.txt", version)
         _install_vendored_dependencies(staged_plugin / "_vendor")
         _assert_dependency_closure(staged_plugin / "_vendor")
         _write_archive(staged_plugin, archive)

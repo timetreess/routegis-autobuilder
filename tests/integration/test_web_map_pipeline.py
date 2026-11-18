@@ -5,7 +5,7 @@ import pytest
 
 from routegis.app import project_service as module
 from routegis.app.project_service import ProjectService
-from routegis.cli import FixtureProvider
+from routegis.providers.fixture import FixtureProvider
 from routegis.errors import ExportError
 from routegis.models import ProjectConfig
 
@@ -14,9 +14,9 @@ from routegis.models import ProjectConfig
 def config(tmp_path, fixture_directory):
     return ProjectConfig(
         project_name="Web map", source_drawing=fixture_directory / "sample_route.dxf",
-        source_layers=(), source_crs="EPSG:5186", output_crs="EPSG:5186",
+        source_crs="EPSG:5186", output_crs="EPSG:5186",
         buffer_distance=1000, selected_layers=("cadastral", "building"),
-        output_directory=tmp_path, project_type="non_linear",
+        output_directory=tmp_path,
     )
 
 
@@ -24,7 +24,7 @@ def test_build_publishes_standalone_web_map_with_only_selected_layers(config, fi
     events = []
     result = ProjectService().build(
         config, provider=FixtureProvider(fixture_directory / "spatial_mock.json"),
-        api_key="fixture-key", use_native_project=False,
+        api_key="fixture-key",
         on_progress=lambda percent, text: events.append((percent, text)),
     )
     assert result.web_map_html == result.project_file.with_suffix(".html")
@@ -48,7 +48,7 @@ def test_build_publishes_standalone_web_map_with_only_selected_layers(config, fi
 def test_web_map_failure_preserves_previous_entire_project(config, fixture_directory, monkeypatch):
     provider = FixtureProvider(fixture_directory / "spatial_mock.json")
     service = ProjectService()
-    previous = service.build(config, provider=provider, use_native_project=False)
+    previous = service.build(config, provider=provider)
     before = {path.name: path.read_bytes() for path in (previous.web_map_html, previous.manifest, previous.project_file)}
 
     def fail(*args, **kwargs):
@@ -56,7 +56,7 @@ def test_web_map_failure_preserves_previous_entire_project(config, fixture_direc
 
     monkeypatch.setattr(module, "write_web_map", fail, raising=False)
     with pytest.raises(ExportError, match="web export failed"):
-        service.build(config, provider=provider, use_native_project=False)
+        service.build(config, provider=provider)
     assert before == {path.name: path.read_bytes() for path in (previous.web_map_html, previous.manifest, previous.project_file)}
     assert not list(config.output_directory.glob(".Web_map.build-*"))
 
@@ -64,7 +64,7 @@ def test_web_map_failure_preserves_previous_entire_project(config, fixture_direc
 def test_cancelling_web_export_removes_partial_html_without_losing_old_result(config, fixture_directory):
     provider = FixtureProvider(fixture_directory / "spatial_mock.json")
     service = ProjectService()
-    previous = service.build(config, provider=provider, use_native_project=False)
+    previous = service.build(config, provider=provider)
     before = previous.web_map_html.read_bytes()
 
     class Cancelled(Exception):
@@ -75,6 +75,6 @@ def test_cancelling_web_export_removes_partial_html_without_losing_old_result(co
             raise Cancelled()
 
     with pytest.raises(Cancelled):
-        service.build(config, provider=provider, use_native_project=False, on_progress=cancel)
+        service.build(config, provider=provider, on_progress=cancel)
     assert before == previous.web_map_html.read_bytes()
     assert not list(config.output_directory.glob(".Web_map.build-*"))

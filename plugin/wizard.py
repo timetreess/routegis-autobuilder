@@ -31,6 +31,19 @@ from qgis.PyQt.QtWidgets import (
 from qgis.core import QgsApplication, QgsProject, QgsTask
 
 from .routegis.app.project_service import ProjectService
+from .routegis.app.wizard_logic import (
+    build_result_lines,
+    cad_warning_suffix,
+    catalog_discovery_outcome,
+    coordinate_report_text,
+    credential_log_line,
+    order_selected_layers,
+    parse_crs_code,
+    recommendation_status_text,
+    resolve_credential,
+    stored_credentials,
+    validated_output_directory,
+)
 from .routegis.config import load_profile, load_settings
 from .routegis.environment import load_data_go_kr_service_key, load_vworld_api_key
 from .routegis.errors import RouteGISError
@@ -38,7 +51,6 @@ from .routegis.gis.crs import KOREAN_PROJECTED_CRS, validate_projected_metre_crs
 from .routegis.gis.crs_recommendation import BUSINESS_REGIONS, recommend_crs
 from .routegis.models import ProjectConfig
 from .routegis.providers.catalog import layer_tooltip_lines
-from .routegis.providers.vworld.client import VWorldClient
 from .routegis.qgis.cad_preview import CadMapPreview
 from .routegis.security import redact_sensitive_text
 
@@ -56,11 +68,12 @@ class RouteGISWizard(QWizard):
         self.recent = QSettings("RouteGIS", "AutoBuilder")
         self.service = ProjectService(self.settings)
         self.result = None
-        self.project_type = None
+        self.drawing_analyzed = False
         self._vworld_task = None
         self._vworld_cursor_active = False
         self._build_task = None
         self._analysis_task = None
+        self._analysis = None  # latest DrawingAnalysis; owned by the wizard
         self._preview_iterator = None
         self._build_started = 0.0
         self._last_build_update = 0.0
@@ -157,7 +170,7 @@ class RouteGISWizard(QWizard):
 
     @staticmethod
     def _crs_code(selector: QComboBox) -> str:
-        return selector.currentText().split(" — ", 1)[0].strip().upper()
+        return parse_crs_code(selector.currentText())
 
     def _cad_page(self) -> QWizardPage:
         from qgis.gui import QgsMapCanvas, QgsMapToolPan
@@ -334,16 +347,12 @@ class RouteGISWizard(QWizard):
         return drawing
 
     def _output_directory(self) -> Path:
-        output_directory = self.output_directory.text().strip()
-        if not output_directory:
-            raise RouteGISError("프로젝트 저장 위치를 선택해 주세요.")
-        return Path(output_directory)
+        return validated_output_directory(self.output_directory.text())
 
     def _save_credentials(self) -> None:
-        credentials = {
-            "vworld_api_key": self.vworld_api_key.text().strip(),
-            "data_go_kr_service_key": self.data_go_kr_service_key.text().strip(),
-        }
+        credentials = stored_credentials(
+            self.vworld_api_key.text(), self.data_go_kr_service_key.text()
+        )
         for key, value in credentials.items():
             if value:
                 self.recent.setValue(key, value)
@@ -363,11 +372,10 @@ class RouteGISWizard(QWizard):
         self.analysis_stage.setText("도면 분석 대기 · 도면 분석 버튼을 눌러 주세요.")
         self.analysis_elapsed.setText("파일 읽기 → 선 객체 분석 → 좌표계 추천 → 지도 표시")
         self.analysis_log.clear()
-        self.project_type = None
+        self.drawing_analyzed = False
         self._preview_timer.stop()
         self._preview.clear_drawing()
-        self.service.last_coordinate_report = None
-        self.service.last_cad_lines = {}
+        self._analysis = None
         self.crs_recommendations.clear()
         self.coordinate_report.setText("도면 분석 후 실제 X/Y 범위와 도면 단위를 표시합니다.")
         self.recommendation_status.setText("도면 또는 사업 지역이 변경되었습니다. 다시 분석해 주세요.")
@@ -441,10 +449,8 @@ class RouteGISWizard(QWizard):
             if not cancelled:
                 QMessageBox.critical(self, "도면 분석 실패", message)
             return
-        self.service.last_cad_lines = result["lines"]
-        self.service.last_coordinate_report = result["report"]
-        self.service.last_cad_warnings = result["warnings"]
-        candidates = result["candidates"]
+        analysis = self._analysis = result["analysis"]
+        candidates = analysis.candidates
         self.candidate_table.setRowCount(len(candidates))
         for row, candidate in enumerate(candidates):
             values = (
@@ -463,25 +469,15 @@ class RouteGISWizard(QWizard):
             self.analysis_stage.setText("분석 완료 · 지원하는 선 객체 없음")
             self._update_analysis_elapsed()
             return
-        warning_suffix = ""
-        if self.service.last_cad_warnings:
-            warning_suffix = "\n경고:\n" + "\n".join(
-                f"- {issue.layer}: {issue.message}" for issue in self.service.last_cad_warnings
-            )
-        self.project_type = "non_linear"
+        warning_suffix = cad_warning_suffix(analysis.warnings)
+        self.drawing_analyzed = True
         self.cad_status.setText(
             "표시된 모든 지원 선 객체를 기준으로 사업구간 주변 범위를 만듭니다."
             + warning_suffix
         )
-        report = self.service.last_coordinate_report
-        min_x, min_y, max_x, max_y = report.bounds
-        self.coordinate_report.setText(
-            f"DXF 실제 좌표: X {min_x:,.3f} ~ {max_x:,.3f} / Y {min_y:,.3f} ~ {max_y:,.3f}\n"
-            f"범위 중심: ({report.center[0]:,.3f}, {report.center[1]:,.3f}) · "
-            f"$INSUNITS={report.insunits} ({report.unit_name}) · X=동쪽, Y=북쪽으로 해석"
-        )
+        self.coordinate_report.setText(coordinate_report_text(analysis.coordinate_report))
         self._recommend_coordinates(result["recommendations"])
-        self._preview_iterator = self._preview.iter_load_lines(self.service.last_cad_lines)
+        self._preview_iterator = self._preview.iter_load_lines(analysis.lines_by_layer)
         self._preview_load_timer.start()
 
     def _load_preview_step(self) -> None:
@@ -524,7 +520,7 @@ class RouteGISWizard(QWizard):
             self._append_analysis_log("도면 분석 취소됨 · 미완성 미리보기를 정리했습니다.")
 
     def _recommend_coordinates(self, candidates=None):
-        report = self.service.last_coordinate_report
+        report = self._analysis.coordinate_report
         try:
             if candidates is None:
                 candidates = recommend_crs(report.bounds, self.business_region.currentText())
@@ -538,22 +534,9 @@ class RouteGISWizard(QWizard):
                 f"{candidate.reason}\n예상 중심: 경도 {candidate.longitude:.6f}, 위도 {candidate.latitude:.6f}",
                 Qt.ToolTipRole,
             )
+        self.recommendation_status.setText(recommendation_status_text(len(candidates), report.insunits))
         if candidates:
-            self.recommendation_status.setText(
-                f"추천 후보 {len(candidates)}개 · 시·도 대략 범위와 EPSG 사용범위 기준 (동점은 목록 순서). "
-                "첫 후보를 미리보기에 임시 적용합니다. Bessel/GRS80 등은 지도에서 비교해 선택하세요."
-            )
             self._apply_recommendation(0)
-        else:
-            self.recommendation_status.setText(
-                "해당 지역에 맞는 후보가 없습니다. 사업 지역, 지역 원점·임의 좌표, X/Y 뒤바뀜, "
-                "경위도·mm 단위를 확인하거나 원본 좌표계를 직접 선택해 주세요."
-            )
-        if report.insunits not in (0, 6):
-            self.recommendation_status.setText(
-                self.recommendation_status.text()
-                + " 도면 단위가 미터로 기록되어 있지 않습니다. 좌표 단위를 확인하세요 (자동 배율 변환 없음)."
-            )
 
     def _apply_recommendation(self, index: int):
         code = self.crs_recommendations.itemData(index)
@@ -582,7 +565,7 @@ class RouteGISWizard(QWizard):
     def _dispose_preview(self, *_: object):
         self._preview_timer.stop()
         self._preview.close()
-        self.service.last_cad_lines = {}
+        self._analysis = None
 
     def _preview_render_error(self, message, layer):
         self.preview_status.setText(f"지도 표시 오류 ({layer.name()}): {message}")
@@ -590,7 +573,7 @@ class RouteGISWizard(QWizard):
     def validateCurrentPage(self) -> bool:
         if self._analysis_task is not None or self._preview_iterator is not None:
             return False
-        if self.currentId() == self._cad_page_id and self.project_type is None:
+        if self.currentId() == self._cad_page_id and not self.drawing_analyzed:
             QMessageBox.warning(self, "도면 분석 필요", "도면 분석을 실행해 주세요.")
             return False
         if self.currentId() == self._cad_page_id:
@@ -633,39 +616,11 @@ class RouteGISWizard(QWizard):
 
     @staticmethod
     def _discover_vworld_catalog(task, settings, api_key: str):
-        client: VWorldClient | None = None
-        definitions = None
-        error = None
-        try:
-            if task.isCanceled():
-                return None
-            service = ProjectService(settings)
-            provider = service._provider(
-                provider_name="vworld",
-                api_key=api_key,
-                data_go_kr_service_key="",
-                domain=None,
-            )
-            if not isinstance(provider, VWorldClient):
-                raise RouteGISError("VWorld 목록 공급자를 초기화할 수 없습니다.")
-            client = provider
-            definitions = client.discover_layers()
-        except Exception as exc:
-            error = redact_sensitive_text(exc, api_key)
-        finally:
-            if client is not None:
-                try:
-                    client.close()
-                except Exception as exc:
-                    if error is None:
-                        error = redact_sensitive_text(exc, api_key)
-            api_key = ""
-
-        if task.isCanceled():
-            return None
-        if error is not None:
-            return {"error": error}
-        return {"definitions": definitions}
+        return catalog_discovery_outcome(
+            lambda: ProjectService(settings).discover_vworld_layers(api_key),
+            task.isCanceled,
+            api_key,
+        )
 
     def _finish_vworld_catalog(self, exception, result=None) -> None:
         try:
@@ -702,7 +657,9 @@ class RouteGISWizard(QWizard):
 
     def _load_vworld_catalog(self) -> None:
         self._save_credentials()
-        api_key = self.vworld_api_key.text().strip() or load_vworld_api_key(PLUGIN_DOTENV)
+        api_key = resolve_credential(
+            self.vworld_api_key.text(), lambda: load_vworld_api_key(PLUGIN_DOTENV)
+        ).value
         if not api_key:
             message = "프로젝트 화면에 VWorld API Key를 입력하거나 플러그인 .env에 설정해 주세요."
             self.layer_status.setText(f"현재 목록 유지 · {message}")
@@ -758,11 +715,7 @@ class RouteGISWizard(QWizard):
             for index in range(self.layer_list.count())
             if self.layer_list.item(index).checkState() == Qt.Checked
         )
-        default_ids = load_profile()
-        checked = set(checked_ids)
-        return tuple(layer_id for layer_id in default_ids if layer_id in checked) + tuple(
-            layer_id for layer_id in checked_ids if layer_id not in default_ids
-        )
+        return order_selected_layers(checked_ids, load_profile())
 
     def _set_build_running(self, running: bool) -> None:
         self.run_button.setEnabled(not running)
@@ -836,36 +789,30 @@ class RouteGISWizard(QWizard):
         data_go_kr_service_key = ""
         try:
             self._save_credentials()
-            if self.project_type is None:
+            if not self.drawing_analyzed:
                 raise RouteGISError("도면 분석을 실행해 주세요.")
             config = ProjectConfig(
                 project_name=self.project_name.text().strip(),
                 source_drawing=self._drawing_path(),
-                source_layers=(),
                 source_crs=self._crs_code(self.source_crs),
                 output_crs=self._crs_code(self.output_crs),
                 buffer_distance=self.buffer_distance.value(),
                 selected_layers=self._selected_layers(),
                 output_directory=self._output_directory(),
                 export_shapefile=True,
-                snap_tolerance=self.settings.snap_tolerance,
                 chord_tolerance=self.settings.chord_tolerance,
-                project_type="non_linear",
             )
-            api_key = (
-                self.vworld_api_key.text().strip()
-                or load_vworld_api_key(PLUGIN_DOTENV)
+            vworld = resolve_credential(
+                self.vworld_api_key.text(), lambda: load_vworld_api_key(PLUGIN_DOTENV)
             )
-            data_go_kr_service_key = (
-                self.data_go_kr_service_key.text().strip()
-                or load_data_go_kr_service_key(PLUGIN_DOTENV)
+            data_go_kr = resolve_credential(
+                self.data_go_kr_service_key.text(),
+                lambda: load_data_go_kr_service_key(PLUGIN_DOTENV),
             )
-            for label, field, key in (
-                ("VWorld", self.vworld_api_key, api_key),
-                ("공공데이터포털", self.data_go_kr_service_key, data_go_kr_service_key),
-            ):
-                source = "입력란(저장값 포함)" if field.text().strip() else "환경변수 / 플러그인 .env"
-                self._append_build_log(f"{label} 인증키: {source if key else '미설정'}")
+            api_key = vworld.value
+            data_go_kr_service_key = data_go_kr.value
+            self._append_build_log(credential_log_line("VWorld", vworld))
+            self._append_build_log(credential_log_line("공공데이터포털", data_go_kr))
             self._build_task = ProjectBuildTask(
                 self.service,
                 config,
@@ -908,38 +855,12 @@ class RouteGISWizard(QWizard):
             self.recent.setValue("output_directory", self.output_directory.text())
             self.recent.setValue("drawing", self.drawing.text())
             self.recent.setValue("business_region", self.business_region.currentText())
-            self.recent.remove("domain")
             self.recent.sync()
-            lines = [
-                "프로젝트 생성 결과",
-            ]
-            failed_count = 0
-            for item in self.result.downloads:
-                definition = self.service.catalog.get(item.layer_id)
-                label = f"{definition.name} [{definition.provider} / {item.layer_id}]"
-                if item.status == "success":
-                    detail = f"성공 · {item.feature_count}개" if item.feature_count else "성공 · 0개 (해당없음)"
-                    lines.append(f"✓ {label}: {detail}")
-                else:
-                    failed_count += 1
-                    error = redact_sensitive_text(
-                        item.error, self.vworld_api_key.text().strip(), self.data_go_kr_service_key.text().strip()
-                    )
-                    lines.append(f"⚠ {label}: 실패\n    원인: {error or '공급자가 상세 오류를 반환하지 않았습니다.'}")
-            if failed_count:
-                total = len(self.result.downloads)
-                summary = f"공간정보 {total}개 모두 실패했습니다." if failed_count == total else f"공간정보 {total}개 중 {failed_count}개가 실패했습니다."
-                lines.append(f"\n{summary} 위 원인을 확인해 주세요.")
-            lines.extend([
-                "✓ GeoPackage 생성",
-                "✓ SHP 생성",
-                "✓ QGIS 프로젝트 생성",
-                f"\n{self.result.state.value}",
-                f"보고서: {self.result.report_html}",
-                f"로그: {self.result.project_directory / 'logs' / 'app.log'}",
-            ])
-            if self.result.web_map_html is not None:
-                lines.append(f"✓ HTML 웹 지도: {self.result.web_map_html}\n  이 HTML 파일 하나만 복사해 브라우저로 열 수 있습니다. 배경지도 선택 시에는 인터넷이 필요합니다.")
+            lines, failed_count = build_result_lines(
+                self.result,
+                self.service.catalog.get,
+                (self.vworld_api_key.text().strip(), self.data_go_kr_service_key.text().strip()),
+            )
             self._append_build_log("\n".join(lines))
             self.build_stage.setText("생성 완료 · QGIS에서 프로젝트 여는 중")
             self._open_project()
@@ -987,8 +908,6 @@ class RouteGISWizard(QWizard):
             QMessageBox.critical(self, "프로젝트 열기 실패", "생성된 QGIS 프로젝트를 열 수 없습니다.")
             return
         route_layers = QgsProject.instance().mapLayersByName("선형")
-        if not route_layers:
-            route_layers = QgsProject.instance().mapLayersByName("노선 중심선")
         if route_layers:
             self.iface.mapCanvas().setExtent(route_layers[0].extent())
         self.iface.mapCanvas().refresh()

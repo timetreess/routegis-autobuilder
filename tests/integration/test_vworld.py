@@ -216,13 +216,12 @@ def test_discover_layers_parses_namespaced_and_plain_feature_types(fixture_direc
         assert request.url.params["request"] == "GetCapabilities"
         assert request.url.params["version"] == "1.1.0"
         assert request.url.params["key"] == "secret-key"
-        assert request.url.params["domain"] == "https://registered.example.com"
+        assert "domain" not in request.url.params
         return httpx.Response(200, content=capabilities)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
         layers = VWorldClient(
             "secret-key",
-            domain="https://registered.example.com",
             retries=0,
             client=http_client,
         ).discover_layers()
@@ -734,7 +733,6 @@ def test_valid_point_for_multipolygon_definition_fails_atomically():
 
     assert result.status == "failed"
     assert result.layer is None
-    assert result.output is None
     assert result.feature_count == 0
     assert result.request_count == 1
     assert result.successful_tile_count == 0
@@ -964,7 +962,6 @@ def test_unparseable_response_crs_is_an_atomic_failed_result_for_the_active_outp
 
     assert result.status == "failed"
     assert result.layer is None
-    assert result.output is None
     assert result.feature_count == 0
     assert result.request_count == 1
     assert result.successful_tile_count == 0
@@ -1197,7 +1194,6 @@ def test_scalar_vworld_error_envelope_is_an_atomic_failed_result():
 
     assert result.status == "failed"
     assert result.layer is None
-    assert result.output is None
     assert result.feature_count == 0
     assert result.request_count == 1
     assert result.successful_tile_count == 0

@@ -76,7 +76,7 @@ def test_invalid_extent_is_rejected(bounds):
         recommend_crs(bounds, "경기도")
 
 
-def test_analysis_reports_actual_supported_line_coordinates_and_resets_after_failure(tmp_path: Path):
+def test_analysis_reports_actual_supported_line_coordinates(tmp_path: Path):
     drawing = tmp_path / "coordinates.dxf"
     document = ezdxf.new()
     document.units = 6
@@ -86,17 +86,16 @@ def test_analysis_reports_actual_supported_line_coordinates_and_resets_after_fai
     modelspace.add_text("Not analysis linework", dxfattribs={"insert": (9e6, 9e6)})
     document.saveas(drawing)
     service = ProjectService()
-    service.analyze_drawing(drawing)
+    analysis = service.analyze_drawing(drawing)
 
-    report = service.last_coordinate_report
+    report = analysis.coordinate_report
     assert report.bounds == (200000, 489000, 201000, 490000)
     assert report.center == (200500, 489500)
     assert report.insunits == 6
     assert report.unit_name == "Meters"
-    assert len(service.last_cad_lines["0"]) == 1
-    assert len(service.last_cad_warnings) == 1
+    assert len(analysis.lines_by_layer["0"]) == 1
+    assert len(analysis.warnings) == 1
 
     with pytest.raises(CadReadError):
         service.analyze_drawing(tmp_path / "missing.dxf")
-    assert service.last_coordinate_report is None
-    assert not service.last_cad_lines
+    assert not hasattr(service, "last_coordinate_report") and not hasattr(service, "last_cad_lines")

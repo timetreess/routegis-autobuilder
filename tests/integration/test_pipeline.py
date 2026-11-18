@@ -14,23 +14,23 @@ from xml.etree import ElementTree as ET
 import pytest
 from shapely.geometry import LineString, Polygon
 
-from routegis import cli as cli_module
-from routegis.app import project_service as project_service_module
+from routegis.app import project_log as project_log_module
+from routegis.app import publish as publish_module
 from routegis.app.project_service import ProjectService
-from routegis.cli import FixtureProvider
+from routegis.providers.fixture import FixtureProvider
 from routegis.errors import ConfigurationError, CrsError, ExportError, ProviderError, RouteGISError
 from routegis.gis.export import export_layers
 from routegis.gis.shapefile import write_shapefile
 from routegis.models import (
     DownloadResult,
     LayerDefinition,
-    PipelineResult,
     PipelineState,
     ProjectConfig,
     SpatialFeature,
     SpatialLayer,
 )
 from routegis.qgis import project as qgis_project_module
+from routegis.qgis.renderers import add_renderer
 
 
 EXPECTED_QGIS_GROUPS = (
@@ -153,7 +153,7 @@ def test_headless_renderer_uses_approved_default_layer_styles(
 ):
     map_layer = ET.Element("maplayer")
 
-    qgis_project_module._renderer(map_layer, layer, shapefile=True)
+    add_renderer(map_layer, layer, shapefile=True)
 
     symbol_layer = map_layer.find("./renderer-v2/symbols/symbol/layer")
     assert symbol_layer is not None
@@ -182,7 +182,7 @@ def test_headless_renderer_categorizes_land_ownership_by_lbl():
     )
     map_layer = ET.Element("maplayer")
 
-    qgis_project_module._renderer(map_layer, layer, shapefile=True)
+    add_renderer(map_layer, layer, shapefile=True)
 
     assert float(map_layer.findtext("layerOpacity", "1")) == pytest.approx(0.7)
     renderer = map_layer.find("./renderer-v2")
@@ -312,7 +312,6 @@ def test_pipeline_reports_shapefile_encoding_fallback_as_warning(
         ProjectConfig(
             project_name="인코딩 대체 경고",
             source_drawing=fixture_directory / "sample_route.dxf",
-            source_layers=("CENTER",),
             source_crs="EPSG:5186",
             output_crs="EPSG:5186",
             buffer_distance=1000,
@@ -382,7 +381,6 @@ def test_golden_pipeline_preserves_successes_and_reports_failures(tmp_path: Path
     config = ProjectConfig(
         project_name="샘플 노선 사업",
         source_drawing=fixture_directory / "sample_route.dxf",
-        source_layers=("CENTER",),
         source_crs="EPSG:5186",
         output_crs="EPSG:5186",
         buffer_distance=1000,
@@ -572,7 +570,6 @@ def test_pipeline_accepts_live_layer_from_active_catalog(tmp_path: Path, fixture
     config = ProjectConfig(
         project_name="실시간 카탈로그",
         source_drawing=fixture_directory / "sample_route.dxf",
-        source_layers=("CENTER",),
         source_crs="EPSG:5186",
         output_crs="EPSG:5186",
         buffer_distance=1000,
@@ -599,7 +596,6 @@ def test_pipeline_rejects_geographic_cad_tolerances(tmp_path: Path, fixture_dire
     config = ProjectConfig(
         project_name="잘못된 좌표계",
         source_drawing=fixture_directory / "sample_route.dxf",
-        source_layers=("CENTER",),
         source_crs="EPSG:4326",
         output_crs="EPSG:5186",
         buffer_distance=1000,
@@ -619,7 +615,6 @@ def test_exported_cad_lengths_match_project_crs(
         ProjectConfig(
             project_name="Reprojected lengths",
             source_drawing=fixture_directory / "sample_route.dxf",
-            source_layers=("CENTER",),
             source_crs="EPSG:5186",
             output_crs=output_crs,
             buffer_distance=1000,
@@ -638,7 +633,6 @@ def test_failed_rerun_preserves_previous_project_and_internal_source(tmp_path: P
     config = ProjectConfig(
         project_name="재실행 안전성",
         source_drawing=fixture_directory / "sample_route.dxf",
-        source_layers=("CENTER",),
         source_crs="EPSG:5186",
         output_crs="EPSG:5186",
         buffer_distance=1000,
@@ -649,10 +643,15 @@ def test_failed_rerun_preserves_previous_project_and_internal_source(tmp_path: P
     original_manifest = initial.manifest.read_bytes()
     internal_source = initial.project_directory / "source" / "sample_route.dxf"
 
-    with pytest.raises(RouteGISError):
+    def fail_after_source_copy(percent: int, _message: str) -> None:
+        if percent >= 16:
+            raise RouteGISError("재실행 중단")
+
+    with pytest.raises(RouteGISError, match="재실행 중단"):
         ProjectService().build(
-            replace(config, source_drawing=internal_source, source_layers=("MISSING",)),
+            replace(config, source_drawing=internal_source),
             provider=FixtureProvider(fixture_directory / "spatial_mock.json"),
+            on_progress=fail_after_source_copy,
         )
 
     assert internal_source.is_file()
@@ -693,7 +692,6 @@ def test_manifest_hashes_internal_snapshot_if_external_source_is_removed(
         ProjectConfig(
             project_name="원본 스냅샷",
             source_drawing=source,
-            source_layers=("CENTER",),
             source_crs="EPSG:5186",
             output_crs="EPSG:5186",
             buffer_distance=1000,
@@ -715,7 +713,6 @@ def test_interrupted_build_removes_staging_directory(tmp_path: Path, fixture_dir
     config = ProjectConfig(
         project_name="중단 정리",
         source_drawing=fixture_directory / "sample_route.dxf",
-        source_layers=("CENTER",),
         source_crs="EPSG:5186",
         output_crs="EPSG:5186",
         buffer_distance=1000,
@@ -739,7 +736,6 @@ def test_interrupted_staging_setup_removes_staging_directory(tmp_path: Path, fix
     config = ProjectConfig(
         project_name="초기화 중단",
         source_drawing=fixture_directory / "sample_route.dxf",
-        source_layers=("CENTER",),
         source_crs="EPSG:5186",
         output_crs="EPSG:5186",
         buffer_distance=1000,
@@ -751,7 +747,7 @@ def test_interrupted_staging_setup_removes_staging_directory(tmp_path: Path, fix
         (staging / "source").mkdir()
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(project_service_module, "_directories", interrupt)
+    monkeypatch.setattr(publish_module, "_directories", interrupt)
 
     with pytest.raises(KeyboardInterrupt):
         ProjectService().build(config)
@@ -777,7 +773,7 @@ def test_publish_retries_a_transient_windows_permission_error(tmp_path: Path, mo
 
     monkeypatch.setattr(Path, "replace", flaky_replace)
 
-    project_service_module._publish_project(staging, project_directory)
+    publish_module._publish_project(staging, project_directory)
 
     assert staging_attempts == 3
     assert (project_directory / "new.txt").read_text(encoding="utf-8") == "new"
@@ -804,7 +800,7 @@ def test_interrupted_publish_restores_previous_project(tmp_path: Path, monkeypat
     monkeypatch.setattr(Path, "replace", interrupting_replace)
 
     with pytest.raises(KeyboardInterrupt):
-        project_service_module._publish_project(staging, project_directory)
+        publish_module._publish_project(staging, project_directory)
 
     assert (project_directory / "old.txt").read_text(encoding="utf-8") == "old"
     assert (staging / "new.txt").read_text(encoding="utf-8") == "new"
@@ -815,7 +811,6 @@ def test_rerun_rejects_safe_name_collision(tmp_path: Path, fixture_directory: Pa
     config = ProjectConfig(
         project_name="서로 다른 이름",
         source_drawing=fixture_directory / "sample_route.dxf",
-        source_layers=("CENTER",),
         source_crs="EPSG:5186",
         output_crs="EPSG:5186",
         buffer_distance=1000,
@@ -831,43 +826,6 @@ def test_rerun_rejects_safe_name_collision(tmp_path: Path, fixture_directory: Pa
         )
 
     assert initial.manifest.is_file()
-
-
-def test_linear_pipeline_preserves_all_cad_entities_and_uses_selected_layers_for_aoi(tmp_path: Path):
-    import ezdxf
-
-    drawing = tmp_path / "multi_object_linework.dxf"
-    document = ezdxf.new()
-    modelspace = document.modelspace()
-    modelspace.add_line((200000, 489000), (201000, 489000), dxfattribs={"layer": "CENTER"})
-    modelspace.add_line((201000, 489000), (202000, 489000), dxfattribs={"layer": "CENTER"})
-    modelspace.add_line((201000, 489000), (201000, 490000), dxfattribs={"layer": "CENTER"})
-    modelspace.add_line((210000, 489000), (211000, 489000), dxfattribs={"layer": "DETACHED"})
-    modelspace.add_line((220000, 489000), (221000, 489000), dxfattribs={"layer": "-교량"})
-    document.saveas(drawing)
-    config = ProjectConfig(
-        project_name="선형 전체 객체 보존",
-        source_drawing=drawing,
-        source_layers=("CENTER",),
-        source_crs="EPSG:5186",
-        output_crs="EPSG:5186",
-        buffer_distance=500,
-        selected_layers=(),
-        output_directory=tmp_path,
-    )
-
-    result = ProjectService().build(config)
-    manifest = json.loads(result.manifest.read_text(encoding="utf-8"))
-
-    assert set(manifest["source"]["layers"]) == {"CENTER", "DETACHED", "-교량"}
-    assert manifest["route"]["buffer_source_layers"] == ["CENTER"]
-    assert manifest["route"]["aoi_bbox"] == pytest.approx([199500, 488500, 202500, 490500])
-    assert (result.project_directory / "shp" / "route" / "선형.shp").is_file()
-    with closing(sqlite3.connect(result.geopackage)) as connection:
-        rows = connection.execute('SELECT dxf_layer FROM "linework" ORDER BY fid').fetchall()
-    assert [row[0] for row in rows].count("CENTER") == 3
-    assert {row[0] for row in rows} == {"CENTER", "DETACHED", "-교량"}
-    assert len(rows) == 5
 
 
 def test_pipeline_skips_zero_length_cad_entities_and_reports_handles(tmp_path: Path):
@@ -887,18 +845,17 @@ def test_pipeline_skips_zero_length_cad_entities_and_reports_handles(tmp_path: P
     handles = {zero_line.dxf.handle, zero_polyline.dxf.handle}
     service = ProjectService()
 
-    candidates = service.analyze_drawing(drawing)
+    analysis = service.analyze_drawing(drawing)
 
-    assert {candidate["name"] for candidate in candidates} == {"AUX", "CENTER"}
-    assert len(service.last_cad_warnings) == 1
-    assert service.last_cad_warnings[0].layer == "AUX"
-    assert all(handle in service.last_cad_warnings[0].message for handle in handles)
+    assert {candidate["name"] for candidate in analysis.candidates} == {"AUX", "CENTER"}
+    assert len(analysis.warnings) == 1
+    assert analysis.warnings[0].layer == "AUX"
+    assert all(handle in analysis.warnings[0].message for handle in handles)
 
     result = service.build(
         ProjectConfig(
             project_name="길이 0 객체 제외",
             source_drawing=drawing,
-            source_layers=("CENTER",),
             source_crs="EPSG:5186",
             output_crs="EPSG:5186",
             buffer_distance=500,
@@ -922,7 +879,7 @@ def test_pipeline_skips_zero_length_cad_entities_and_reports_handles(tmp_path: P
     assert [row[0] for row in rows] == ["AUX", "CENTER"]
 
 
-def test_non_linear_pipeline_buffers_all_supported_objects_without_route_validation(tmp_path: Path):
+def test_pipeline_buffers_all_supported_objects_without_route_validation(tmp_path: Path):
     import ezdxf
 
     drawing = tmp_path / "branched_and_disconnected.dxf"
@@ -936,21 +893,18 @@ def test_non_linear_pipeline_buffers_all_supported_objects_without_route_validat
     config = ProjectConfig(
         project_name="비선형 전체 사업 객체",
         source_drawing=drawing,
-        source_layers=(),
         source_crs="EPSG:5186",
         output_crs="EPSG:5186",
         buffer_distance=500,
         selected_layers=(),
         output_directory=tmp_path,
-        project_type="non_linear",
     )
 
     result = ProjectService().build(config)
     manifest = json.loads(result.manifest.read_text(encoding="utf-8"))
 
-    assert manifest["project_type"] == "non_linear"
+    assert "project_type" not in manifest
     assert manifest["source"]["layers"] == ["BRANCH", "DETACHED", "MAIN"]
-    assert manifest["route"]["buffer_source_layers"] == ["BRANCH", "DETACHED", "MAIN"]
     assert manifest["route"]["bbox"] == pytest.approx([200000, 489000, 211000, 490000])
     assert manifest["route"]["aoi_bbox"] == pytest.approx([199500, 488500, 211500, 490500])
     assert (result.project_directory / "shp" / "route" / "선형.shp").is_file()
@@ -969,7 +923,6 @@ def _provider_routing_config(
     return ProjectConfig(
         project_name=project_name,
         source_drawing=fixture_directory / "sample_route.dxf",
-        source_layers=("CENTER",),
         source_crs="EPSG:5186",
         output_crs="EPSG:5186",
         buffer_distance=1000,
@@ -1037,14 +990,10 @@ def test_pipeline_routes_selected_order_with_lazy_reused_owned_clients(
         ),
         api_key="vworld-secret",
         data_go_kr_service_key="ecology-secret",
-        domain="https://registered.example.com",
     )
 
     assert [download.layer_id for download in result.downloads] == list(selected_layers)
     assert sorted(creations) == ["ecology", "osm", "vworld"]
-    assert {name: credentials["domain"] for name, credentials in factory_calls} == {
-        "vworld": "https://registered.example.com", "osm": None, "ecology": None,
-    }
     for name in clients:
         assert [layer_id for provider_name, layer_id in events if provider_name == name] == [
             layer_id for layer_id in selected_layers if service.catalog.get(layer_id).provider == name
@@ -1498,192 +1447,6 @@ def test_manifest_report_tile_stats_and_failed_layer_exclusion(
     assert not (result.project_directory / "shp" / "facility" / "building.metadata.json").exists()
 
 
-def _cli_build_arguments(
-    tmp_path: Path,
-    fixture_directory: Path,
-    *extra: str,
-) -> list[str]:
-    return [
-        "build",
-        str(fixture_directory / "sample_route.dxf"),
-        "--project-name",
-        "CLI Task 8",
-        "--output",
-        str(tmp_path),
-        "--route-layer",
-        "CENTER",
-        "--source-crs",
-        "EPSG:5186",
-        "--output-crs",
-        "EPSG:5186",
-        "--buffer",
-        "1000",
-        "--layers",
-        "ecology_nature,land_ownership,power_line",
-        *extra,
-    ]
-
-
-def test_cli_rejects_explicit_zero_buffer(
-    tmp_path: Path,
-    fixture_directory: Path,
-    capsys,
-):
-    arguments = _cli_build_arguments(tmp_path, fixture_directory)
-    arguments[arguments.index("--buffer") + 1] = "0"
-    arguments.extend(
-        ["--fixture", str(fixture_directory / "spatial_mock.json")]
-    )
-
-    exit_code = cli_module.main(arguments)
-
-    assert exit_code == 2
-    assert "0보다 커야" in capsys.readouterr().err
-
-
-def test_cli_analyze_rejects_explicit_zero_chord_tolerance(
-    fixture_directory: Path,
-    capsys,
-):
-    exit_code = cli_module.main(
-        [
-            "analyze",
-            str(fixture_directory / "sample_route.dxf"),
-            "--chord-tolerance",
-            "0",
-        ]
-    )
-
-    assert exit_code == 2
-    assert "0보다 커야" in capsys.readouterr().err
-
-
-def test_cli_fixture_build_needs_no_credentials(
-    tmp_path: Path,
-    fixture_directory: Path,
-    monkeypatch,
-    capsys,
-):
-    def unexpected_loader(*_paths: Path) -> str:
-        raise AssertionError("fixture builds must not load credentials")
-
-    captured: dict[str, object] = {}
-    original_build = ProjectService.build
-
-    def recording_build(self: ProjectService, config: ProjectConfig, **kwargs: object) -> PipelineResult:
-        captured.update(kwargs)
-        return original_build(self, config, **kwargs)
-
-    monkeypatch.setattr(cli_module, "load_vworld_api_key", unexpected_loader)
-    monkeypatch.setattr(cli_module, "load_data_go_kr_service_key", unexpected_loader, raising=False)
-    monkeypatch.setattr(ProjectService, "build", recording_build)
-
-    exit_code = cli_module.main(
-        _cli_build_arguments(
-            tmp_path,
-            fixture_directory,
-            "--fixture",
-            str(fixture_directory / "spatial_mock.json"),
-        )
-    )
-
-    output = capsys.readouterr()
-    assert exit_code == 0
-    assert captured["api_key"] == ""
-    assert captured["data_go_kr_service_key"] == ""
-    assert isinstance(captured["provider"], FixtureProvider)
-    assert "fixture-key" not in output.out
-    assert output.err == ""
-
-
-def test_cli_real_build_loads_both_credentials_independently(
-    tmp_path: Path,
-    fixture_directory: Path,
-    monkeypatch,
-    capsys,
-):
-    vworld_secret = "cli-vworld-secret"
-    ecology_secret = "cli-ecology-secret"
-    loader_calls: list[tuple[str, tuple[Path, ...]]] = []
-    captured: dict[str, object] = {}
-
-    def load_vworld(*paths: Path) -> str:
-        loader_calls.append(("vworld", paths))
-        return vworld_secret
-
-    def load_ecology(*paths: Path) -> str:
-        loader_calls.append(("ecology", paths))
-        return ecology_secret
-
-    def fake_build(self: ProjectService, config: ProjectConfig, **kwargs: object) -> PipelineResult:
-        captured.update(kwargs)
-        project_directory = config.output_directory / "CLI_Task_8"
-        return PipelineResult(
-            state=PipelineState.COMPLETED,
-            project_directory=project_directory,
-            project_file=project_directory / "CLI_Task_8.qgz",
-            geopackage=project_directory / "data" / "project.gpkg",
-            report_html=project_directory / "reports" / "processing_report.html",
-        )
-
-    monkeypatch.setattr(cli_module, "load_vworld_api_key", load_vworld)
-    monkeypatch.setattr(cli_module, "load_data_go_kr_service_key", load_ecology, raising=False)
-    monkeypatch.setattr(ProjectService, "build", fake_build)
-
-    exit_code = cli_module.main(
-        _cli_build_arguments(
-            tmp_path,
-            fixture_directory,
-            "--domain",
-            "https://registered.example.com",
-        )
-    )
-
-    output = capsys.readouterr()
-    dotenv = Path.cwd() / ".env"
-    assert exit_code == 0
-    assert loader_calls == [("vworld", (dotenv,)), ("ecology", (dotenv,))]
-    assert captured["api_key"] == vworld_secret
-    assert captured["data_go_kr_service_key"] == ecology_secret
-    assert captured["domain"] == "https://registered.example.com"
-    assert vworld_secret not in output.out + output.err
-    assert ecology_secret not in output.out + output.err
-
-
-def test_cli_never_prints_loaded_credentials_on_build_error(
-    tmp_path: Path,
-    fixture_directory: Path,
-    monkeypatch,
-    capsys,
-):
-    vworld_secret = "cli-error-vworld-secret"
-    ecology_secret = "cli-error-ecology-secret"
-
-    monkeypatch.setattr(cli_module, "load_vworld_api_key", lambda *_paths: vworld_secret)
-    monkeypatch.setattr(
-        cli_module,
-        "load_data_go_kr_service_key",
-        lambda *_paths: ecology_secret,
-        raising=False,
-    )
-
-    def failing_build(*_args: object, **_kwargs: object) -> PipelineResult:
-        raise RouteGISError(
-            f"failed {vworld_secret} {ecology_secret} "
-            f"https://example.test/data?key={vworld_secret}"
-        )
-
-    monkeypatch.setattr(ProjectService, "build", failing_build)
-
-    exit_code = cli_module.main(_cli_build_arguments(tmp_path, fixture_directory))
-
-    output = capsys.readouterr()
-    assert exit_code == 2
-    assert vworld_secret not in output.out + output.err
-    assert ecology_secret not in output.out + output.err
-    assert "?" not in output.err
-
-
 class _SingleDefinitionCatalog:
     def __init__(self, definition: LayerDefinition):
         self.definition = definition
@@ -2027,7 +1790,7 @@ def test_secret_filter_redacts_encoded_secrets_in_structured_log_arguments(
 ):
     record = logging.LogRecord("routegis.test", logging.WARNING, __file__, 1, message, arguments, None)
 
-    assert project_service_module._SecretFilter("a/b+?=%").filter(record)
+    assert project_log_module._SecretFilter("a/b+?=%").filter(record)
 
     rendered = record.getMessage()
     assert "***" in rendered
@@ -2035,32 +1798,7 @@ def test_secret_filter_redacts_encoded_secrets_in_structured_log_arguments(
     assert "%252f" not in rendered.lower()
 
 
-def test_cli_redacts_mixed_case_and_nested_encoded_secrets_from_stderr(
-    tmp_path: Path,
-    fixture_directory: Path,
-    monkeypatch,
-    capsys,
-):
-    secret = "a/b+?=%"
-    secret_forms = _encoded_secret_forms(secret)
-    monkeypatch.setattr(cli_module, "load_vworld_api_key", lambda *_paths: secret)
-    monkeypatch.setattr(cli_module, "load_data_go_kr_service_key", lambda *_paths: "", raising=False)
-
-    def failing_build(*_args: object, **_kwargs: object) -> PipelineResult:
-        raise RouteGISError("encoded credential forms: " + " | ".join(secret_forms))
-
-    monkeypatch.setattr(ProjectService, "build", failing_build)
-
-    exit_code = cli_module.main(_cli_build_arguments(tmp_path, fixture_directory))
-
-    output = capsys.readouterr()
-    assert exit_code == 2
-    assert "***" in output.err
-    assert all(secret_form not in output.out + output.err for secret_form in secret_forms)
-
-
 def test_redaction_preserves_ordinary_case_sensitive_text_semantics():
     message = "CaseToken casetoken CASETOKEN"
 
-    assert project_service_module._redact(message, "CaseToken") == "*** casetoken CASETOKEN"
-    assert cli_module._redact_error(message, "CaseToken") == "*** casetoken CASETOKEN"
+    assert project_log_module._redact(message, "CaseToken") == "*** casetoken CASETOKEN"

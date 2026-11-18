@@ -10,10 +10,6 @@ class CadReadError(RouteGISError):
     """Raised when a CAD drawing cannot be read or converted."""
 
 
-class RouteAssemblyError(RouteGISError):
-    """Raised when selected CAD entities cannot form one route."""
-
-
 class CrsError(RouteGISError):
     """Raised when a CRS is missing, unsuitable, or cannot be transformed."""
 

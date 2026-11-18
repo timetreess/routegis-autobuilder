@@ -5,23 +5,22 @@ from threading import Barrier, Event, get_ident
 import pytest
 
 from routegis.app.project_service import ProjectService
-from routegis.cli import FixtureProvider
+from routegis.providers.fixture import FixtureProvider
 from routegis.models import DownloadResult, ProjectConfig, SpatialLayer
 from routegis.app import project_service as service_module
-from routegis.qgis import project as project_module
 
 
 @pytest.fixture
 def config(tmp_path, fixture_directory):
     return ProjectConfig(
         project_name="Progress", source_drawing=fixture_directory / "sample_route.dxf",
-        source_layers=(), source_crs="EPSG:5186", output_crs="EPSG:5186",
+        source_crs="EPSG:5186", output_crs="EPSG:5186",
         buffer_distance=1000, selected_layers=("cadastral", "building"),
-        output_directory=tmp_path, project_type="non_linear",
+        output_directory=tmp_path,
     )
 
 
-def test_progress_arrives_before_fetch_and_reports_partial_failure(config, fixture_directory, monkeypatch):
+def test_progress_arrives_before_fetch_and_reports_partial_failure(config, fixture_directory):
     events = []
     fixture = FixtureProvider(fixture_directory / "spatial_mock.json")
 
@@ -31,14 +30,9 @@ def test_progress_arrives_before_fetch_and_reports_partial_failure(config, fixtu
             assert "수집 중" in events[-1][1]
             return fixture.fetch_layer(definition, aoi)
 
-    def forbidden_native(*args, **kwargs):
-        pytest.fail("Background builds must not create QGIS objects")
-
-    monkeypatch.setattr(project_module, "_native_project", forbidden_native)
     result = ProjectService().build(
         config, api_key="fixture-key", provider=Provider(),
         on_progress=lambda percent, message: events.append((percent, message)),
-        use_native_project=False,
     )
 
     percentages = [percent for percent, _ in events]
@@ -134,7 +128,7 @@ def test_parallel_provider_progress_is_serialized_and_manifest_keeps_selection_o
 
     monkeypatch.setattr(service_module, "export_layers", checked_export)
     monkeypatch.setattr(service, "_provider", factory)
-    result = service.build(config, api_key="fixture-key", on_progress=progress, use_native_project=False)
+    result = service.build(config, api_key="fixture-key", on_progress=progress)
     assert [d.layer_id for d in result.downloads] == list(selected)
     manifest = json.loads(result.manifest.read_text(encoding="utf-8"))
     assert [d["id"] for d in manifest["layers"]] == list(selected)
@@ -182,7 +176,7 @@ def test_cancelling_parallel_downloads_closes_clients_before_removing_staging(co
 
     monkeypatch.setattr(service, "_provider", factory)
     with pytest.raises(Cancelled):
-        service.build(config, on_progress=progress, use_native_project=False)
+        service.build(config, on_progress=progress)
     assert len(closed) == 3
     assert previous.manifest.read_bytes() == manifest
     assert not list(config.output_directory.glob(".Progress.build-*"))

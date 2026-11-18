@@ -39,10 +39,7 @@ class AppSettings:
     osm_tile_size_m: float
     osm_timeout: float
     osm_retry: int
-    snap_tolerance: float
     chord_tolerance: float
-    export_geopackage: bool
-    export_shapefile: bool
     qgis_template_version: str
 
 
@@ -89,10 +86,7 @@ def load_settings(path: Path | None = None) -> AppSettings:
             osm_tile_size_m=float(data["osm"]["tile_size_m"]),
             osm_timeout=float(data["osm"]["timeout"]),
             osm_retry=int(data["osm"]["retry"]),
-            snap_tolerance=float(data["cad"]["snap_tolerance"]),
             chord_tolerance=float(data["cad"]["chord_tolerance"]),
-            export_geopackage=bool(data["export"]["geopackage"]),
-            export_shapefile=bool(data["export"]["shapefile"]),
             qgis_template_version=str(data["qgis"]["template_version"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -149,16 +143,8 @@ def validate_project_config(config: ProjectConfig, catalog: dict[str, LayerDefin
     safe_project_name(config.project_name)
     if not config.source_drawing.is_file():
         raise ConfigurationError(f"도면 파일을 찾을 수 없습니다: {config.source_drawing}")
-    if config.source_drawing.suffix.lower() not in {".dxf", ".dwg"}:
-        raise ConfigurationError("도면 파일은 DWG 또는 DXF 형식이어야 합니다.")
-    if config.project_type not in {"linear", "non_linear"}:
-        raise ConfigurationError(f"지원하지 않는 사업 유형입니다: {config.project_type}")
-    if config.project_type == "linear" and (
-        not config.source_layers or any(not layer.strip() for layer in config.source_layers)
-    ):
-        raise ConfigurationError("노선 레이어를 선택해 주세요.")
-    if len(set(config.source_layers)) != len(config.source_layers):
-        raise ConfigurationError("노선 레이어가 중복 선택되었습니다.")
+    if config.source_drawing.suffix.lower() != ".dxf":
+        raise ConfigurationError("도면 파일은 DXF 형식이어야 합니다.")
     if len(set(config.selected_layers)) != len(config.selected_layers):
         raise ConfigurationError("공간정보가 중복 선택되었습니다.")
     for crs in (config.source_crs, config.output_crs):
@@ -166,10 +152,8 @@ def validate_project_config(config: ProjectConfig, catalog: dict[str, LayerDefin
             raise ConfigurationError(f"좌표계 형식이 올바르지 않습니다: {crs}")
     if config.buffer_distance <= 0:
         raise ConfigurationError("사업구간 주변 범위는 0보다 커야 합니다.")
-    if config.snap_tolerance <= 0 or config.chord_tolerance <= 0:
-        raise ConfigurationError("도면 연결 및 곡선 허용오차는 0보다 커야 합니다.")
+    if config.chord_tolerance <= 0:
+        raise ConfigurationError("곡선 허용오차는 0보다 커야 합니다.")
     unknown = sorted(set(config.selected_layers) - set(catalog))
     if unknown:
         raise ConfigurationError(f"카탈로그에 없는 공간정보입니다: {', '.join(unknown)}")
-    if config.source_drawing.suffix.lower() == ".dwg" and config.dwg_converter is None:
-        raise ConfigurationError("DWG 파일을 사용하려면 외부 DWG→DXF 변환기를 지정해 주세요.")

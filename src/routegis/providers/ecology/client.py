@@ -14,21 +14,22 @@ from shapely import make_valid
 from shapely.errors import ShapelyError
 from shapely.geometry import MultiPoint, MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import unary_union
 
 from ...errors import CrsError, ProviderError, RetryableProviderError
 from ...gis import AoiTilePlanner, compute_request_budget
-from ...gis.crs import normalize_crs, transform_layer
+from ...gis.crs import normalize_crs
 from ...models import DownloadResult, LayerDefinition, SpatialFeature, SpatialLayer
 from ...security import redact_sensitive_text
-from ..download import DEFAULT_MAX_RESPONSE_BYTES, FetchContext, read_response_bytes, retry_delay, split_failed_tile
-from ..tls import CERT_GUIDANCE, create_httpx_client, is_certificate_verification_error
+from ..download import (
+    DEFAULT_MAX_RESPONSE_BYTES, RECOVERABLE_SERVER_STATUS, TRANSIENT_STATUS, FetchContext, clip_to_aoi,
+    read_response_bytes, retry_delay, split_failed_tile, validate_download_limits,
+)
+from ..tls import certificate_provider_error, create_httpx_client, is_certificate_verification_error
 
 
 ECOLOGY_WFS_ENDPOINT = (
     "https://apis.data.go.kr/B553084/ecoapi/EcologyzmpService/wfs/getEcologyzmpWFS"
 )
-ECOLOGY_TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
 ECOLOGY_MAX_FEATURES = 500
 
 WFS_NAMESPACE = "http://www.opengis.net/wfs"
@@ -66,26 +67,16 @@ class EcologyClient:
     ):
         if not isinstance(service_key, str) or not service_key.strip():
             raise ProviderError("국립생태원 서비스 인증키를 입력해 주세요.")
-        for name, value in (
-            ("timeout", timeout),
-            ("tile_size_m", tile_size_m),
-            ("minimum_tile_size_m", minimum_tile_size_m),
-        ):
-            if not isfinite(value) or value <= 0:
-                raise ValueError(f"{name} must be finite and positive")
-        if request_budget_minimum < 0:
-            raise ValueError("request_budget_minimum must be non-negative")
-        if request_budget_per_tile < 0:
-            raise ValueError("request_budget_per_tile must be non-negative")
-        if request_budget_maximum <= 0:
-            raise ValueError("request_budget_maximum must be positive")
-        if max_split_depth < 0:
-            raise ValueError("max_split_depth must be non-negative")
-        if not 1 <= max_response_bytes <= DEFAULT_MAX_RESPONSE_BYTES:
-            raise ValueError(
-                "max_response_bytes must be between 1 and "
-                f"{DEFAULT_MAX_RESPONSE_BYTES}"
-            )
+        self._limits = validate_download_limits(
+            positive_sizes={"timeout": timeout, "tile_size_m": tile_size_m},
+            request_budget_minimum=request_budget_minimum,
+            request_budget_per_tile=request_budget_per_tile,
+            request_budget_maximum=request_budget_maximum,
+            max_split_depth=max_split_depth,
+            minimum_tile_size_m=minimum_tile_size_m,
+            max_response_bytes=max_response_bytes,
+            coerce=True,
+        )
 
         # The portal offers both Encoding and Decoding keys. HTTPX encodes params.
         # unquote (not unquote_plus) preserves literal '+' in a decoded key.
@@ -94,12 +85,6 @@ class EcologyClient:
         self._backoff = max(float(backoff), 0.0)
         self._page_size = min(max(int(page_size), 1), ECOLOGY_MAX_FEATURES)
         self._tile_size_m = float(tile_size_m)
-        self._request_budget_minimum = int(request_budget_minimum)
-        self._request_budget_per_tile = int(request_budget_per_tile)
-        self._request_budget_maximum = int(request_budget_maximum)
-        self._max_split_depth = int(max_split_depth)
-        self._minimum_tile_size_m = float(minimum_tile_size_m)
-        self._max_response_bytes = int(max_response_bytes)
         self._sleep = sleep
         self._on_progress = on_progress
         self._check_cancelled = check_cancelled
@@ -150,14 +135,14 @@ class EcologyClient:
                     follow_redirects=False,
                 ) as response:
                     status = response.status_code
-                    if status in ECOLOGY_TRANSIENT_STATUSES and attempt < self._retries:
+                    if status in TRANSIENT_STATUS and attempt < self._retries:
                         delay = retry_delay(response, self._backoff * (2**attempt))
                     else:
                         if 300 <= status < 400:
                             raise ProviderError(
                                 f"Ecology 리디렉션 응답을 거부했습니다: HTTP {status}"
                             )
-                        content = read_response_bytes(response, self._max_response_bytes, "Ecology")
+                        content = read_response_bytes(response, self._limits.max_response_bytes, "Ecology")
                         if status >= 400:
                             try:
                                 root = DefusedET.fromstring(content, forbid_dtd=True)
@@ -165,7 +150,7 @@ class EcologyClient:
                             except (ET.ParseError, DefusedXmlException):
                                 detail = ""
                             suffix = f" · {detail}" if detail else ""
-                            error_type = RetryableProviderError if status in {500, 502, 503, 504} else ProviderError
+                            error_type = RetryableProviderError if status in RECOVERABLE_SERVER_STATUS else ProviderError
                             raise error_type(
                                 f"Ecology 요청에 실패했습니다: HTTP {status}{suffix}"
                             )
@@ -174,26 +159,16 @@ class EcologyClient:
                     context.notify(f"서버 일시 오류 · {delay:g}초 후 재시도 {attempt + 1}/{self._retries}")
                     self._sleep(delay)
                     continue
-            except (httpx.TimeoutException, httpx.TransportError) as exc:
-                if is_certificate_verification_error(exc):
-                    raise ProviderError(
-                        "Ecology HTTPS 인증서를 확인할 수 없습니다.\n"
-                        f"{CERT_GUIDANCE}\n"
-                        f"상세: {self._redact(str(exc))}"
-                    ) from exc
-                last_transport_error = exc
-                if attempt < self._retries:
-                    self._sleep(self._backoff * (2**attempt))
-                    continue
-                break
             except httpx.HTTPError as exc:
                 if is_certificate_verification_error(exc):
-                    raise ProviderError(
-                        "Ecology HTTPS 인증서를 확인할 수 없습니다.\n"
-                        f"{CERT_GUIDANCE}\n"
-                        f"상세: {self._redact(str(exc))}"
+                    raise certificate_provider_error(
+                        "Ecology HTTPS 인증서를 확인할 수 없습니다.",
+                        detail=self._redact(str(exc)),
                     ) from exc
                 last_transport_error = exc
+                if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)) and attempt < self._retries:
+                    self._sleep(self._backoff * (2**attempt))
+                    continue
                 break
 
         if last_transport_error is None:
@@ -572,32 +547,25 @@ class EcologyClient:
             return " · ".join(part for part in (code, locator, text) if part)
         return ""
 
-    @staticmethod
-    def _combined_geometry(layer: SpatialLayer):
-        geometries = [feature.geometry for feature in layer.features if not feature.geometry.is_empty]
-        if not geometries:
-            raise ProviderError("Ecology 조회 범위를 만들 수 없습니다.")
-        return unary_union(geometries)
-
     def fetch_layer(self, definition: LayerDefinition, aoi: SpatialLayer) -> DownloadResult:
         context = FetchContext("Ecology", on_progress=self._on_progress,
-                               request_budget_maximum=self._request_budget_maximum,
+                               request_budget_maximum=self._limits.request_budget_maximum,
                                check_cancelled=self._check_cancelled)
         try:
             planner = AoiTilePlanner(
                 aoi,
                 definition.request_crs,
                 self._tile_size_m,
-                self._max_split_depth,
-                self._minimum_tile_size_m,
+                self._limits.max_split_depth,
+                self._limits.minimum_tile_size_m,
             )
             initial_tiles = planner.initial_tiles()
             context.initial_tile_count = len(initial_tiles)
             context.request_budget = compute_request_budget(
                 len(initial_tiles),
-                self._request_budget_minimum,
-                self._request_budget_per_tile,
-                self._request_budget_maximum,
+                self._limits.request_budget_minimum,
+                self._limits.request_budget_per_tile,
+                self._limits.request_budget_maximum,
             )
             if not initial_tiles:
                 raise ProviderError("Ecology 조회 타일을 만들 수 없습니다.")
@@ -652,13 +620,7 @@ class EcologyClient:
                 features=[parsed_features[fid] for fid in sorted(parsed_features)],
                 source="ecology",
             )
-            output_layer = transform_layer(request_layer, aoi.crs)
-            aoi_geometry = self._combined_geometry(aoi)
-            output_layer.features = [
-                feature
-                for feature in output_layer.features
-                if feature.geometry.intersects(aoi_geometry)
-            ]
+            output_layer = clip_to_aoi(request_layer, aoi, "Ecology")
             return context.success_result(output_layer)
         except CrsError as exc:
             error = f"Ecology 좌표계를 처리할 수 없습니다: {self._redact(str(exc))}"

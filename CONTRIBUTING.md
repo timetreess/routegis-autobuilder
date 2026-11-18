@@ -6,6 +6,7 @@
 python -m venv .venv
 & ".venv\Scripts\python.exe" -m pip install -e ".[test]"
 & ".venv\Scripts\python.exe" -m pytest
+uvx ruff@0.17.5 check src plugin scripts tests
 ```
 
 Python 3.9 or later is required. Keep credentials in an ignored `.env`; never commit API keys, project drawings or generated project outputs.
@@ -14,7 +15,7 @@ Python 3.9 or later is required. Keep credentials in an ignored `.env`; never co
 
 1. Open an issue before a substantial behavior or data-model change.
 2. Keep changes focused and include tests for important behavioral boundaries.
-3. Run the full pytest suite and `uv run scripts/build_plugin.py`.
+3. Run the full pytest suite, the Ruff check above (CI blocks on it) and `uv run scripts/build_plugin.py`.
 4. Confirm the generated plugin ZIP contains no `.env`, bytecode or native binaries.
 5. Describe any QGIS version used for manual verification.
 

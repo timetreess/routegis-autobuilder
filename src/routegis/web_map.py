@@ -9,57 +9,39 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 from pyproj import Transformer
 from pyproj.exceptions import ProjError
 from shapely.errors import ShapelyError
 from shapely.geometry import mapping
-from shapely.ops import transform
 
 from .errors import ExportError
-from .gis.crs import transform_bounds
+from .gis.crs import transform_bounds, transform_coordinates
 from .models import DownloadResult, SpatialLayer
-from .qgis.project_schema import _group_for
-from .qgis.renderers import _renderer
+from .qgis.project_schema import group_for
+from .styles import (
+    LAND_OWNERSHIP_FIELD,
+    category_styles,
+    is_categorized,
+    layer_opacity,
+    leaflet_style,
+    symbol_style,
+)
 from .security import redact_sensitive_text
 
 
 WEB_RESOURCES = Path(__file__).parent / "resources" / "web"
 
 
-def _color(value: str, opacity: float) -> tuple[str, float]:
-    red, green, blue, alpha = map(int, value.split(","))
-    return f"#{red:02x}{green:02x}{blue:02x}", alpha / 255 * opacity
-
-
-def _symbol_style(symbol: ET.Element, opacity: float) -> dict:
-    properties = {item.attrib["k"]: item.attrib["v"] for item in symbol.findall("./layer/prop")}
-    kind = symbol.attrib["type"]
-    stroke = properties.get("line_color" if kind == "line" else "outline_color", properties.get("color", "76,110,143,255"))
-    color, alpha = _color(stroke, opacity)
-    width = float(properties.get("line_width" if kind == "line" else "outline_width", "0.35"))
-    unit = properties.get("line_width_unit" if kind == "line" else "outline_width_unit", "MM")
-    weight = width * {"MM": 96 / 25.4, "Point": 96 / 72, "Pixel": 1}.get(unit, 1)
-    result = {"color": color, "opacity": alpha, "weight": weight, "fill": kind != "line"}
-    if kind != "line":
-        result["fillColor"], result["fillOpacity"] = _color(properties.get("color", "92,140,108,70"), opacity)
-    if kind == "marker":
-        result["radius"] = float(properties.get("size", "2")) * 96 / 25.4 / 2
-    return result
-
-
 def _layer_style(layer: SpatialLayer) -> dict:
-    root = ET.Element("style")
-    _renderer(root, layer)
-    renderer = root.find("renderer-v2")
-    opacity = float(root.findtext("layerOpacity", "1"))
-    styles = {symbol.attrib["name"]: _symbol_style(symbol, opacity) for symbol in renderer.findall("./symbols/symbol")}
-    return {
-        "default": next(iter(styles.values())), "field": renderer.attrib.get("attr"),
-        "categories": [{"value": item.attrib["value"], "label": item.attrib["label"],
-                        "style": styles[item.attrib["symbol"]]} for item in renderer.findall("./categories/category")],
-    }
+    opacity = layer_opacity(layer)
+    if not is_categorized(layer):
+        return {"default": leaflet_style(symbol_style(layer), opacity), "field": None, "categories": []}
+    categories = [
+        {"value": item.value or "", "label": item.label, "style": leaflet_style(item.symbol, opacity)}
+        for item in category_styles(layer)
+    ]
+    return {"default": categories[0]["style"], "field": LAND_OWNERSHIP_FIELD, "categories": categories}
 
 
 def _script_json(value: object) -> str:
@@ -124,7 +106,7 @@ def write_web_map(
         return value
 
     entries = [{
-        "id": layer.name, "name": layer.display_name, "group": _group_for(layer),
+        "id": layer.name, "name": layer.display_name, "group": group_for(layer),
         "count": len(layer.features), "status": "success", "error": None,
         "metadata": dict(metadata.get(layer.name, {})), "style": _layer_style(layer),
         "data": f"routegis-data-{index}",
@@ -161,7 +143,7 @@ def write_web_map(
                 converter = Transformer.from_crs(layer.crs, "EPSG:4326", always_xy=True)
                 output.write(f'<script id="routegis-data-{index}" type="application/json">{{"type":"FeatureCollection","features":[')
                 for feature_index, feature in enumerate(layer.features):
-                    geometry = transform(converter.transform, feature.geometry)
+                    geometry = transform_coordinates(converter, feature.geometry)
                     item = {"type": "Feature", "geometry": mapping(geometry), "properties": clean(feature.properties)}
                     if feature.feature_id is not None:
                         item["id"] = clean_text(str(feature.feature_id))

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "routegis-autobuilder"
-version = "0.3.4"
+dynamic = ["version"]
 description = "QGIS-native route drawing to spatial-analysis project builder"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -24,9 +24,6 @@ dependencies = [
 [project.optional-dependencies]
 test = ["build>=1.2", "pytest>=8.3", "pytest-cov>=6"]
 
-[project.scripts]
-routegis = "routegis.cli:main"
-
 [project.urls]
 Homepage = "https://github.com/timetreess/routegis-autobuilder#readme"
 Repository = "https://github.com/timetreess/routegis-autobuilder"
@@ -36,11 +33,28 @@ Changelog = "https://github.com/timetreess/routegis-autobuilder/blob/main/CHANGE
 [tool.setuptools]
 package-dir = {"" = "src"}
 
+[tool.setuptools.dynamic]
+version = {attr = "routegis.__version__"}
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-routegis = ["resources/*.yaml", "resources/presets/*.yaml", "resources/styles/*.qml", "resources/web/*", "resources/web/leaflet/*", "resources/web/leaflet/images/*.png"]
+routegis = ["resources/*.yaml", "resources/presets/*.yaml", "resources/web/*", "resources/web/leaflet/*", "resources/web/leaflet/images/*.png"]
+
+[tool.ruff]
+target-version = "py39"
+
+[tool.ruff.lint]
+# Errors and likely bugs only: syntax/undefined names (E4, E7, E9, F) and bugbear (B).
+select = ["E4", "E7", "E9", "F", "B"]
+# getattr/setattr with constant names are deliberate on dynamically imported QGIS modules and stubs.
+ignore = ["B009", "B010"]
+
+[tool.ruff.lint.per-file-ignores]
+# Callbacks defined in a loop run within the same iteration (timers, task hooks).
+"tests/manual/qgis_smoke.py" = ["B023"]
+"tests/unit/test_threading_compat.py" = ["B023"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

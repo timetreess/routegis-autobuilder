@@ -1,19 +1,100 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from collections.abc import Callable
 from math import isfinite
 from time import monotonic
 
 import httpx
 
+from shapely.ops import unary_union
+
 from ..errors import ProviderError, RetryableProviderError
+from ..gis.crs import transform_layer
 from ..gis.tiling import AoiTile, AoiTilePlanner
 from ..models import DownloadResult, SpatialLayer
 
 
 DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 MAX_RECOVERY_DEPTH = 4
+TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
+# Subset of TRANSIENT_STATUS whose final failure can be recovered by splitting the tile.
+RECOVERABLE_SERVER_STATUS = frozenset({500, 502, 503, 504})
+
+
+@dataclass(frozen=True)
+class DownloadLimits:
+    """Request budget, tiling and response-size limits shared by all providers."""
+
+    request_budget_minimum: int
+    request_budget_per_tile: int
+    request_budget_maximum: int
+    max_split_depth: int
+    minimum_tile_size_m: float
+    max_response_bytes: int
+
+
+def validate_download_limits(
+    *,
+    positive_sizes: Mapping[str, float],
+    request_budget_minimum: int,
+    request_budget_per_tile: int,
+    request_budget_maximum: int,
+    max_split_depth: int,
+    minimum_tile_size_m: float,
+    max_response_bytes: int,
+    coerce: bool = False,
+) -> DownloadLimits:
+    """Validate constructor limits.
+
+    ``positive_sizes`` holds provider-specific finite-positive values (timeout,
+    tile sizes), checked first and in order; ``minimum_tile_size_m`` is always
+    checked too. ``coerce`` normalises values to int/float.
+    """
+    for name, value in (*positive_sizes.items(), ("minimum_tile_size_m", minimum_tile_size_m)):
+        if not isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be finite and positive")
+    if request_budget_minimum < 0:
+        raise ValueError("request_budget_minimum must be non-negative")
+    if request_budget_per_tile < 0:
+        raise ValueError("request_budget_per_tile must be non-negative")
+    if request_budget_maximum <= 0:
+        raise ValueError("request_budget_maximum must be positive")
+    if max_split_depth < 0:
+        raise ValueError("max_split_depth must be non-negative")
+    if not 1 <= max_response_bytes <= DEFAULT_MAX_RESPONSE_BYTES:
+        raise ValueError(
+            f"max_response_bytes must be between 1 and {DEFAULT_MAX_RESPONSE_BYTES}"
+        )
+    if coerce:
+        return DownloadLimits(
+            int(request_budget_minimum), int(request_budget_per_tile),
+            int(request_budget_maximum), int(max_split_depth),
+            float(minimum_tile_size_m), int(max_response_bytes),
+        )
+    return DownloadLimits(
+        request_budget_minimum, request_budget_per_tile, request_budget_maximum,
+        max_split_depth, minimum_tile_size_m, max_response_bytes,
+    )
+
+
+def combined_aoi_geometry(aoi: SpatialLayer, provider: str):
+    geometries = [feature.geometry for feature in aoi.features if not feature.geometry.is_empty]
+    if not geometries:
+        raise ProviderError(f"{provider} 조회 범위를 만들 수 없습니다.")
+    return unary_union(geometries)
+
+
+def filter_to_aoi(layer: SpatialLayer, aoi: SpatialLayer, provider: str) -> SpatialLayer:
+    """Keep only features of *layer* (already in the AOI CRS) intersecting the AOI."""
+    aoi_geometry = combined_aoi_geometry(aoi, provider)
+    layer.features = [feature for feature in layer.features if feature.geometry.intersects(aoi_geometry)]
+    return layer
+
+
+def clip_to_aoi(request_layer: SpatialLayer, aoi: SpatialLayer, provider: str) -> SpatialLayer:
+    """Transform to the AOI CRS and keep only features intersecting the AOI."""
+    return filter_to_aoi(transform_layer(request_layer, aoi.crs), aoi, provider)
 
 
 def is_resource_error(message: str) -> bool:

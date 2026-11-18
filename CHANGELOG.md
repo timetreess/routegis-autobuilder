@@ -6,6 +6,25 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ## [Unreleased]
 
+### Changed
+
+- The Wizard result summary now reports the outputs that were actually written: the GeoPackage and QGIS project paths, the number of Shapefiles, and layers that fell back to GeoPackage because of EUC-KR encoding.
+- Generate the `style/*.qml` files from the same style definitions as the project and web map. Their colours, widths and units now match what the generated QGIS project displays (for example the cadastral outline).
+- Keep the release version only in `src/routegis/__init__.py`; the plugin build writes it into the packaged `metadata.txt`.
+- Run blocking Ruff checks in CI and replace the deprecated `shapely.ops.transform` with `shapely.transform`, preserving Z coordinates.
+
+### Removed
+
+- Remove the unused centerline-selection (`linear`) project type, the CLI `--route-layer` and `--project-type` options, and route assembly. Every valid DXF line object is always used for the analysis area, as in the Wizard.
+- Remove the external DWG-to-DXF converter adapter and the CLI `--dwg-converter` option. Save drawings as DXF before use.
+- Remove unused preview-layer helpers, bounding-box/custom-polygon analysis-area modes, unused pipeline states, export settings and the legacy `qgis_automation.py` launcher.
+- Drop `project_type`, `source.dwg_converter` and `route.buffer_source_layers` from `project_manifest.json`, and the empty `data/raw/` output folder.
+- Remove the `routegis` command-line interface and the Python wheel/source distribution release assets. The QGIS plugin ZIP is the only distribution; release validation now builds the sample project offline with `scripts/fixture_build.py`.
+- Remove the PyQGIS-native project writer. Every project is written by the same XML writer the plugin already used.
+- Remove the unused VWorld registered-domain parameter.
+- Remove route-candidate scoring and the CAD snap tolerance. The Wizard's CAD object list is now ordered by layer name, and the Manifest no longer records `route.snap_tolerance`.
+- Replace the implementation-era PRD with a current product specification and remove agent planning documents.
+
 ## [0.3.4] - 2026-11-02
 
 ### Fixed

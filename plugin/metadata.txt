@@ -1,7 +1,7 @@
 [general]
 name=RouteGIS AutoBuilder
 description=Build analysis-ready QGIS projects from DXF route drawings.
-version=0.3.4
+version=0.0.0
 qgisMinimumVersion=3.34
 qgisMaximumVersion=3.99
 author=한재혁

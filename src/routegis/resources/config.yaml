@@ -26,10 +26,6 @@ osm:
   timeout: 180
   retry: 2
 cad:
-  snap_tolerance: 0.1
   chord_tolerance: 0.1
-export:
-  geopackage: true
-  shapefile: true
 qgis:
   template_version: "3.40.0"
