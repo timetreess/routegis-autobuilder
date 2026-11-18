@@ -845,12 +845,12 @@ def test_pipeline_skips_zero_length_cad_entities_and_reports_handles(tmp_path: P
     handles = {zero_line.dxf.handle, zero_polyline.dxf.handle}
     service = ProjectService()
 
-    candidates = service.analyze_drawing(drawing)
+    analysis = service.analyze_drawing(drawing)
 
-    assert {candidate["name"] for candidate in candidates} == {"AUX", "CENTER"}
-    assert len(service.last_cad_warnings) == 1
-    assert service.last_cad_warnings[0].layer == "AUX"
-    assert all(handle in service.last_cad_warnings[0].message for handle in handles)
+    assert {candidate["name"] for candidate in analysis.candidates} == {"AUX", "CENTER"}
+    assert len(analysis.warnings) == 1
+    assert analysis.warnings[0].layer == "AUX"
+    assert all(handle in analysis.warnings[0].message for handle in handles)
 
     result = service.build(
         ProjectConfig(

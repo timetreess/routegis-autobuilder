@@ -13,7 +13,7 @@ from typing import Any
 
 from shapely.geometry import LineString
 
-from ..cad.reader import DxfCoordinateReport, DxfReader
+from ..cad.reader import DxfReader
 from ..config import AppSettings, load_settings, safe_project_name, validate_project_config
 from ..errors import (
     CadReadError,
@@ -46,6 +46,7 @@ from ..qgis.project import write_qgis_project
 from ..report import GEOMETRY_POLICY, write_reports
 from ..web_map import write_web_map
 from .downloads import fetch_provider_groups
+from .drawing_analysis import DrawingAnalysis
 from .project_log import _close_project_logger, _logger, _redact
 from .publish import _publish_project, _staging_directory, _validate_existing_project
 
@@ -394,15 +395,9 @@ class ProjectService:
     def __init__(self, settings: AppSettings | None = None):
         self.settings = settings or load_settings()
         self.catalog: LayerCatalog = LayerCatalog()
-        self.last_cad_warnings: tuple[ValidationIssue, ...] = ()
-        self.last_coordinate_report: DxfCoordinateReport | None = None
-        self.last_cad_lines: dict[str, list[LineString]] = {}
 
     def analyze_drawing(self, drawing: Path, *, chord_tolerance: float | None = None,
-                        on_progress: Callable[[int, str], None] | None = None) -> list[dict[str, Any]]:
-        self.last_cad_warnings = ()
-        self.last_coordinate_report = None
-        self.last_cad_lines = {}
+                        on_progress: Callable[[int, str], None] | None = None) -> DrawingAnalysis:
         notify = on_progress or (lambda percent, message: None)
         notify(0, "도면 분석 준비 중")
         reader = DxfReader(
@@ -421,10 +416,19 @@ class ProjectService:
         lines = reader.lines_by_layer()
         candidates = [asdict(item) for item in inventory]
         notify(100, f"도면 분석 완료 · CAD 레이어 {len(candidates)}개")
-        self.last_cad_warnings = warnings
-        self.last_coordinate_report = report
-        self.last_cad_lines = lines
-        return candidates
+        return DrawingAnalysis(candidates, report, lines, warnings)
+
+    def discover_vworld_layers(self, api_key: str) -> list[LayerDefinition]:
+        """Fetch the live VWorld layer list; the client is always closed."""
+        provider = self._provider(
+            provider_name="vworld", api_key=api_key, data_go_kr_service_key="",
+        )
+        if not isinstance(provider, VWorldClient):
+            raise RouteGISError("VWorld 목록 공급자를 초기화할 수 없습니다.")
+        try:
+            return provider.discover_layers()
+        finally:
+            provider.close()
 
     def _provider(
         self,
@@ -547,7 +551,6 @@ class ProjectService:
                            on_progress=lambda percent, message: report(8 + 7 * percent // 100, message))
         lines_by_layer = reader.lines_by_layer()
         cad_warnings = _cad_skip_issues(reader)
-        self.last_cad_warnings = tuple(cad_warnings)
         for issue in cad_warnings:
             log.warning("CAD 객체 제외: %s: %s", issue.layer, issue.message)
         if not lines_by_layer:

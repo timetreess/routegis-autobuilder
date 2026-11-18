@@ -347,7 +347,7 @@ def _assert_responsive_analysis(wizard_module, interface, temporary_root):
             assert len(ticks) >= 5
             assert wizard.analyze_button.isEnabled() and not wizard._analysis_timer.isActive()
             if cancel:
-                assert not wizard.drawing_analyzed and not wizard.service.last_cad_lines
+                assert not wizard.drawing_analyzed and wizard._analysis is None
                 assert wizard._preview.line_layer is None
                 assert "취소" in wizard.analysis_stage.text()
             else:

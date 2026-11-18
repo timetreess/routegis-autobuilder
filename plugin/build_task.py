@@ -47,16 +47,11 @@ class DrawingAnalysisTask(QgsTask):
             raise _BuildCancelled()
         # Both DXF analysis and CRS recommendations can call pyproj.
         service = ProjectService(self.settings)
-        candidates = service.analyze_drawing(self.drawing, on_progress=update)
+        analysis = service.analyze_drawing(self.drawing, on_progress=update)
         update(100, "사업 지역과 실제 DXF 좌표로 좌표계 후보 찾는 중")
-        coordinate_report = service.last_coordinate_report
-        recommendations = recommend_crs(coordinate_report.bounds, self.region) if coordinate_report else []
+        recommendations = recommend_crs(analysis.coordinate_report.bounds, self.region)
         update(100, "좌표계 후보 준비 완료 · 지도 미리보기 준비 중")
-        return {
-            "candidates": candidates, "report": coordinate_report,
-            "lines": service.last_cad_lines, "warnings": service.last_cad_warnings,
-            "recommendations": recommendations,
-        }
+        return {"analysis": analysis, "recommendations": recommendations}
 
     def run(self) -> bool:
         try:

@@ -82,7 +82,7 @@ def _assert_plugin_build(project_root, plugin_parent, package, output_directory)
         service.settings, config.source_drawing, "경기도",
     )
     assert analysis.run(), analysis.error
-    assert analysis.result["report"] is not None
+    assert analysis.result["analysis"].coordinate_report is not None
     assert analysis.progress[0] == 0 and analysis.progress[-1] == 80
 
     # Cancellation before worker dispatch must not publish partial results.
