@@ -4,6 +4,7 @@ import argparse
 import configparser
 import importlib
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 
-EXPECTED_VERSION = "0.3.4"
+EXPECTED_VERSION = ""  # derived from the plugin under test in run()
 CORE_PACKAGE = ""
 DEFAULT_LAYER_IDS = (
     "ecology_nature",
@@ -1144,7 +1145,7 @@ def _load_plugin(interface, plugin_directory, temporary_root, previous_plugin_di
 
 
 def run(project_root: Path, plugin_directory: Path, previous_plugin_directory: Path | None = None) -> None:
-    global CORE_PACKAGE
+    global CORE_PACKAGE, EXPECTED_VERSION
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     project_root = project_root.resolve()
@@ -1187,6 +1188,11 @@ def run(project_root: Path, plugin_directory: Path, previous_plugin_directory: P
             OverpassClient = _core_module("providers.overpass").OverpassClient
             VWorldClient = _core_module("providers.vworld").VWorldClient
 
+            EXPECTED_VERSION = re.search(
+                r'^__version__ = "([^"]+)"$',
+                (plugin_directory / "routegis" / "__init__.py").read_text(encoding="utf-8"),
+                re.MULTILINE,
+            ).group(1)
             assert _plugin_version(plugin_directory) == EXPECTED_VERSION
             assert all((EcologyClient, OverpassClient, VWorldClient))
 

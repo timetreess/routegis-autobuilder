@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "routegis-autobuilder"
-version = "0.3.4"
+dynamic = ["version"]
 description = "QGIS-native route drawing to spatial-analysis project builder"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -32,6 +32,9 @@ Changelog = "https://github.com/timetreess/routegis-autobuilder/blob/main/CHANGE
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+version = {attr = "routegis.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

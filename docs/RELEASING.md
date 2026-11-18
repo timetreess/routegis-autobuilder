@@ -14,7 +14,7 @@ gh run download <run-id> --name release-artifacts --dir release-download
 The workflow requires all of the following to succeed:
 
 1. The shared CI suite on Python 3.9 and 3.12.
-2. Plugin version consistency and vendored dependency closure checks.
+2. Plugin version stamping into the staged `metadata.txt` and vendored dependency closure checks.
 3. Bandit, detect-secrets and pip-audit checks on the packaged plugin.
 4. Installation of the core package in a clean environment and an offline fixture build (`scripts/fixture_build.py`) with all six default layers, QGZ, HTML web map, GeoPackage and Shapefile output.
 5. Generation and verification of SHA-256 checksums for every release asset.
@@ -82,7 +82,7 @@ installed Edge where automation is permitted.
 
 After the preflight and both smoke checks pass:
 
-1. Keep the version consistent in `pyproject.toml`, `src/routegis/__init__.py`, `plugin/metadata.txt` and `tests/manual/qgis_smoke.py`; update `CHANGELOG.md` and the plugin changelog.
+1. Set the new version only in `__version__` in `src/routegis/__init__.py`. `pyproject.toml`, the plugin ZIP's `metadata.txt` (the repository copy holds a `0.0.0` placeholder), the smoke check and the release tag check all read it from there. Update `CHANGELOG.md` and the `changelog=` line in `plugin/metadata.txt`.
 2. Merge the intended changes to `main`, run the preflight and the smoke checks above, and confirm the tested commit is the intended release commit.
 3. Create and push the version tag at that commit, replacing `<version>` (for example `0.3.5`):
 
