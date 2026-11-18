@@ -12,6 +12,10 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 - Remove the external DWG-to-DXF converter adapter and the CLI `--dwg-converter` option. Save drawings as DXF before use.
 - Remove unused preview-layer helpers, bounding-box/custom-polygon analysis-area modes, unused pipeline states, export settings and the legacy `qgis_automation.py` launcher.
 - Drop `project_type`, `source.dwg_converter` and `route.buffer_source_layers` from `project_manifest.json`, and the empty `data/raw/` output folder.
+- Remove the `routegis` command-line interface and the Python wheel/source distribution release assets. The QGIS plugin ZIP is the only distribution; release validation now builds the sample project offline with `scripts/fixture_build.py`.
+- Remove the PyQGIS-native project writer. Every project is written by the same XML writer the plugin already used.
+- Remove the unused VWorld registered-domain parameter.
+- Remove route-candidate scoring and the CAD snap tolerance. The Wizard's CAD object list is now ordered by layer name, and the Manifest no longer records `route.snap_tolerance`.
 - Replace the implementation-era PRD with a current product specification and remove agent planning documents.
 
 ## [0.3.4] - 2026-11-02

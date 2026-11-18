@@ -8,7 +8,6 @@ from pathlib import Path
 from ..config import resource_root
 from ..models import SpatialLayer
 from .headless_project import _headless_qgs
-from .native_project import _native_project
 from .project_schema import (
     GROUPS,
     STYLE_NAMES,
@@ -49,40 +48,28 @@ def write_qgis_project(
     *,
     template_version: str = "3.40.0",
     layer_metadata: Mapping[str, Mapping[str, str]] | None = None,
-    use_native: bool = True,
 ) -> Path:
     path = Path(path).with_suffix(".qgz")
     path.parent.mkdir(parents=True, exist_ok=True)
     _project_relative_path(path.parent, geopackage, label="GeoPackage")
     _project_relative_path(path.parent, source_drawing, label="원본 도면")
-    # Worker threads use the XML writer, avoiding QGIS QObject creation/access.
-    native = use_native and _native_project(
-        path,
+    # Write project XML directly so background builds never create QGIS objects.
+    qgs = _headless_qgs(
         project_name,
+        path.parent,
         geopackage,
         layers,
         source_drawing,
         source_crs,
+        template_version,
         layer_metadata,
     )
-    if not native:
-        qgs_name = f"{path.stem}.qgs"
-        qgs = _headless_qgs(
-            project_name,
-            path.parent,
-            geopackage,
-            layers,
-            source_drawing,
-            source_crs,
-            template_version,
-            layer_metadata,
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        info = zipfile.ZipInfo(
+            f"{path.stem}.qgs",
+            date_time=(1980, 1, 1, 0, 0, 0),
         )
-        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            info = zipfile.ZipInfo(
-                qgs_name,
-                date_time=(1980, 1, 1, 0, 0, 0),
-            )
-            info.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(info, qgs)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        archive.writestr(info, qgs)
     _copy_styles(path.parent)
     return path

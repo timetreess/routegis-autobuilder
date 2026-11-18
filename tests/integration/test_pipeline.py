@@ -14,17 +14,15 @@ from xml.etree import ElementTree as ET
 import pytest
 from shapely.geometry import LineString, Polygon
 
-from routegis import cli as cli_module
 from routegis.app import project_service as project_service_module
 from routegis.app.project_service import ProjectService
-from routegis.cli import FixtureProvider
+from routegis.providers.fixture import FixtureProvider
 from routegis.errors import ConfigurationError, CrsError, ExportError, ProviderError, RouteGISError
 from routegis.gis.export import export_layers
 from routegis.gis.shapefile import write_shapefile
 from routegis.models import (
     DownloadResult,
     LayerDefinition,
-    PipelineResult,
     PipelineState,
     ProjectConfig,
     SpatialFeature,
@@ -990,14 +988,10 @@ def test_pipeline_routes_selected_order_with_lazy_reused_owned_clients(
         ),
         api_key="vworld-secret",
         data_go_kr_service_key="ecology-secret",
-        domain="https://registered.example.com",
     )
 
     assert [download.layer_id for download in result.downloads] == list(selected_layers)
     assert sorted(creations) == ["ecology", "osm", "vworld"]
-    assert {name: credentials["domain"] for name, credentials in factory_calls} == {
-        "vworld": "https://registered.example.com", "osm": None, "ecology": None,
-    }
     for name in clients:
         assert [layer_id for provider_name, layer_id in events if provider_name == name] == [
             layer_id for layer_id in selected_layers if service.catalog.get(layer_id).provider == name
@@ -1451,190 +1445,6 @@ def test_manifest_report_tile_stats_and_failed_layer_exclusion(
     assert not (result.project_directory / "shp" / "facility" / "building.metadata.json").exists()
 
 
-def _cli_build_arguments(
-    tmp_path: Path,
-    fixture_directory: Path,
-    *extra: str,
-) -> list[str]:
-    return [
-        "build",
-        str(fixture_directory / "sample_route.dxf"),
-        "--project-name",
-        "CLI Task 8",
-        "--output",
-        str(tmp_path),
-        "--source-crs",
-        "EPSG:5186",
-        "--output-crs",
-        "EPSG:5186",
-        "--buffer",
-        "1000",
-        "--layers",
-        "ecology_nature,land_ownership,power_line",
-        *extra,
-    ]
-
-
-def test_cli_rejects_explicit_zero_buffer(
-    tmp_path: Path,
-    fixture_directory: Path,
-    capsys,
-):
-    arguments = _cli_build_arguments(tmp_path, fixture_directory)
-    arguments[arguments.index("--buffer") + 1] = "0"
-    arguments.extend(
-        ["--fixture", str(fixture_directory / "spatial_mock.json")]
-    )
-
-    exit_code = cli_module.main(arguments)
-
-    assert exit_code == 2
-    assert "0보다 커야" in capsys.readouterr().err
-
-
-def test_cli_analyze_rejects_explicit_zero_chord_tolerance(
-    fixture_directory: Path,
-    capsys,
-):
-    exit_code = cli_module.main(
-        [
-            "analyze",
-            str(fixture_directory / "sample_route.dxf"),
-            "--chord-tolerance",
-            "0",
-        ]
-    )
-
-    assert exit_code == 2
-    assert "0보다 커야" in capsys.readouterr().err
-
-
-def test_cli_fixture_build_needs_no_credentials(
-    tmp_path: Path,
-    fixture_directory: Path,
-    monkeypatch,
-    capsys,
-):
-    def unexpected_loader(*_paths: Path) -> str:
-        raise AssertionError("fixture builds must not load credentials")
-
-    captured: dict[str, object] = {}
-    original_build = ProjectService.build
-
-    def recording_build(self: ProjectService, config: ProjectConfig, **kwargs: object) -> PipelineResult:
-        captured.update(kwargs)
-        return original_build(self, config, **kwargs)
-
-    monkeypatch.setattr(cli_module, "load_vworld_api_key", unexpected_loader)
-    monkeypatch.setattr(cli_module, "load_data_go_kr_service_key", unexpected_loader, raising=False)
-    monkeypatch.setattr(ProjectService, "build", recording_build)
-
-    exit_code = cli_module.main(
-        _cli_build_arguments(
-            tmp_path,
-            fixture_directory,
-            "--fixture",
-            str(fixture_directory / "spatial_mock.json"),
-        )
-    )
-
-    output = capsys.readouterr()
-    assert exit_code == 0
-    assert captured["api_key"] == ""
-    assert captured["data_go_kr_service_key"] == ""
-    assert isinstance(captured["provider"], FixtureProvider)
-    assert "fixture-key" not in output.out
-    assert output.err == ""
-
-
-def test_cli_real_build_loads_both_credentials_independently(
-    tmp_path: Path,
-    fixture_directory: Path,
-    monkeypatch,
-    capsys,
-):
-    vworld_secret = "cli-vworld-secret"
-    ecology_secret = "cli-ecology-secret"
-    loader_calls: list[tuple[str, tuple[Path, ...]]] = []
-    captured: dict[str, object] = {}
-
-    def load_vworld(*paths: Path) -> str:
-        loader_calls.append(("vworld", paths))
-        return vworld_secret
-
-    def load_ecology(*paths: Path) -> str:
-        loader_calls.append(("ecology", paths))
-        return ecology_secret
-
-    def fake_build(self: ProjectService, config: ProjectConfig, **kwargs: object) -> PipelineResult:
-        captured.update(kwargs)
-        project_directory = config.output_directory / "CLI_Task_8"
-        return PipelineResult(
-            state=PipelineState.COMPLETED,
-            project_directory=project_directory,
-            project_file=project_directory / "CLI_Task_8.qgz",
-            geopackage=project_directory / "data" / "project.gpkg",
-            report_html=project_directory / "reports" / "processing_report.html",
-        )
-
-    monkeypatch.setattr(cli_module, "load_vworld_api_key", load_vworld)
-    monkeypatch.setattr(cli_module, "load_data_go_kr_service_key", load_ecology, raising=False)
-    monkeypatch.setattr(ProjectService, "build", fake_build)
-
-    exit_code = cli_module.main(
-        _cli_build_arguments(
-            tmp_path,
-            fixture_directory,
-            "--domain",
-            "https://registered.example.com",
-        )
-    )
-
-    output = capsys.readouterr()
-    dotenv = Path.cwd() / ".env"
-    assert exit_code == 0
-    assert loader_calls == [("vworld", (dotenv,)), ("ecology", (dotenv,))]
-    assert captured["api_key"] == vworld_secret
-    assert captured["data_go_kr_service_key"] == ecology_secret
-    assert captured["domain"] == "https://registered.example.com"
-    assert vworld_secret not in output.out + output.err
-    assert ecology_secret not in output.out + output.err
-
-
-def test_cli_never_prints_loaded_credentials_on_build_error(
-    tmp_path: Path,
-    fixture_directory: Path,
-    monkeypatch,
-    capsys,
-):
-    vworld_secret = "cli-error-vworld-secret"
-    ecology_secret = "cli-error-ecology-secret"
-
-    monkeypatch.setattr(cli_module, "load_vworld_api_key", lambda *_paths: vworld_secret)
-    monkeypatch.setattr(
-        cli_module,
-        "load_data_go_kr_service_key",
-        lambda *_paths: ecology_secret,
-        raising=False,
-    )
-
-    def failing_build(*_args: object, **_kwargs: object) -> PipelineResult:
-        raise RouteGISError(
-            f"failed {vworld_secret} {ecology_secret} "
-            f"https://example.test/data?key={vworld_secret}"
-        )
-
-    monkeypatch.setattr(ProjectService, "build", failing_build)
-
-    exit_code = cli_module.main(_cli_build_arguments(tmp_path, fixture_directory))
-
-    output = capsys.readouterr()
-    assert exit_code == 2
-    assert vworld_secret not in output.out + output.err
-    assert ecology_secret not in output.out + output.err
-    assert "?" not in output.err
-
-
 class _SingleDefinitionCatalog:
     def __init__(self, definition: LayerDefinition):
         self.definition = definition
@@ -1986,32 +1796,7 @@ def test_secret_filter_redacts_encoded_secrets_in_structured_log_arguments(
     assert "%252f" not in rendered.lower()
 
 
-def test_cli_redacts_mixed_case_and_nested_encoded_secrets_from_stderr(
-    tmp_path: Path,
-    fixture_directory: Path,
-    monkeypatch,
-    capsys,
-):
-    secret = "a/b+?=%"
-    secret_forms = _encoded_secret_forms(secret)
-    monkeypatch.setattr(cli_module, "load_vworld_api_key", lambda *_paths: secret)
-    monkeypatch.setattr(cli_module, "load_data_go_kr_service_key", lambda *_paths: "", raising=False)
-
-    def failing_build(*_args: object, **_kwargs: object) -> PipelineResult:
-        raise RouteGISError("encoded credential forms: " + " | ".join(secret_forms))
-
-    monkeypatch.setattr(ProjectService, "build", failing_build)
-
-    exit_code = cli_module.main(_cli_build_arguments(tmp_path, fixture_directory))
-
-    output = capsys.readouterr()
-    assert exit_code == 2
-    assert "***" in output.err
-    assert all(secret_form not in output.out + output.err for secret_form in secret_forms)
-
-
 def test_redaction_preserves_ordinary_case_sensitive_text_semantics():
     message = "CaseToken casetoken CASETOKEN"
 
     assert project_service_module._redact(message, "CaseToken") == "*** casetoken CASETOKEN"
-    assert cli_module._redact_error(message, "CaseToken") == "*** casetoken CASETOKEN"

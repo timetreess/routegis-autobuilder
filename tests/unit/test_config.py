@@ -168,7 +168,6 @@ def test_default_settings_match_the_approved_multi_provider_values():
         "osm_tile_size_m": 25000.0,
         "osm_timeout": 180.0,
         "osm_retry": 2,
-        "snap_tolerance": 0.1,
         "chord_tolerance": 0.1,
         "qgis_template_version": "3.40.0",
     }

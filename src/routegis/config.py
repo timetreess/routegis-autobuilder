@@ -39,7 +39,6 @@ class AppSettings:
     osm_tile_size_m: float
     osm_timeout: float
     osm_retry: int
-    snap_tolerance: float
     chord_tolerance: float
     qgis_template_version: str
 
@@ -87,7 +86,6 @@ def load_settings(path: Path | None = None) -> AppSettings:
             osm_tile_size_m=float(data["osm"]["tile_size_m"]),
             osm_timeout=float(data["osm"]["timeout"]),
             osm_retry=int(data["osm"]["retry"]),
-            snap_tolerance=float(data["cad"]["snap_tolerance"]),
             chord_tolerance=float(data["cad"]["chord_tolerance"]),
             qgis_template_version=str(data["qgis"]["template_version"]),
         )
@@ -154,8 +152,8 @@ def validate_project_config(config: ProjectConfig, catalog: dict[str, LayerDefin
             raise ConfigurationError(f"좌표계 형식이 올바르지 않습니다: {crs}")
     if config.buffer_distance <= 0:
         raise ConfigurationError("사업구간 주변 범위는 0보다 커야 합니다.")
-    if config.snap_tolerance <= 0 or config.chord_tolerance <= 0:
-        raise ConfigurationError("도면 연결 및 곡선 허용오차는 0보다 커야 합니다.")
+    if config.chord_tolerance <= 0:
+        raise ConfigurationError("곡선 허용오차는 0보다 커야 합니다.")
     unknown = sorted(set(config.selected_layers) - set(catalog))
     if unknown:
         raise ConfigurationError(f"카탈로그에 없는 공간정보입니다: {', '.join(unknown)}")

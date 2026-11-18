@@ -4,17 +4,15 @@ import pytest
 
 from routegis.app.project_service import ProjectService
 from routegis.cad.reader import DxfReader
-from routegis.cad.route_detector import rank_candidates
 from routegis.errors import CadReadError
 
 
 def test_golden_dxf_inventory_and_linework(fixture_directory: Path):
     reader = DxfReader(fixture_directory / "sample_route.dxf", chord_tolerance=0.05)
-    candidates = rank_candidates(reader.inventory(snap_tolerance=0.1))
+    inventory = {item.name: item for item in reader.inventory()}
 
-    assert candidates[0].name == "CENTER"
-    assert candidates[0].entity_count == 3
-    assert set(candidates[0].entity_types) == {"ARC", "LINE"}
+    assert inventory["CENTER"].entity_count == 3
+    assert set(inventory["CENTER"].entity_types) == {"ARC", "LINE"}
 
     lines = reader.lines_by_layer()["CENTER"]
     assert all(line.geom_type == "LineString" for line in lines)

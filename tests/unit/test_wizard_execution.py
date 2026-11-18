@@ -90,7 +90,7 @@ def wizard(tmp_path):
         _selected_layers=lambda: ("land_ownership", "ecology_nature"),
         _crs_code=lambda _: "EPSG:5186", source_crs=None, output_crs=None,
         buffer_distance=SimpleNamespace(value=lambda: 1000),
-        settings=SimpleNamespace(snap_tolerance=1, chord_tolerance=1),
+        settings=SimpleNamespace(chord_tolerance=1),
         _build_task=None, _vworld_task=None, _build_timer=Mock(),
         progress_bar=Mock(), build_stage=Mock(), build_elapsed=Mock(), button=Mock(),
         _set_build_running=Mock(), _append_build_log=Mock(), _on_build_progress=Mock(),

@@ -24,9 +24,6 @@ dependencies = [
 [project.optional-dependencies]
 test = ["build>=1.2", "pytest>=8.3", "pytest-cov>=6"]
 
-[project.scripts]
-routegis = "routegis.cli:main"
-
 [project.urls]
 Homepage = "https://github.com/timetreess/routegis-autobuilder#readme"
 Repository = "https://github.com/timetreess/routegis-autobuilder"

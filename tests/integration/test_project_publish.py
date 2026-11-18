@@ -209,7 +209,7 @@ def test_first_build_succeeds_while_the_new_html_is_open_for_reading(config):
             streams.append((staging / "Publish.html").open("rb"))
 
     try:
-        result = ProjectService().build(config, use_native_project=False, on_progress=read_new_html)
+        result = ProjectService().build(config, on_progress=read_new_html)
         assert result.project_file.is_file()
         assert result.geopackage.is_file()
         assert result.web_map_html.read_bytes() == streams[0].read()
@@ -229,7 +229,7 @@ def test_publish_failure_preserves_completed_outputs_and_redacted_diagnostics(co
 
     monkeypatch.setattr(Path, "replace", failed_publish)
     with pytest.raises(ConfigurationError):
-        ProjectService().build(config, api_key="fixture-secret", use_native_project=False)
+        ProjectService().build(config, api_key="fixture-secret")
 
     staging = next(config.output_directory.glob(".Publish.build-*"))
     for relative in ("Publish.qgz", "Publish.html", "data/project.gpkg", "project_manifest.json"):

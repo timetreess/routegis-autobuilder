@@ -216,13 +216,12 @@ def test_discover_layers_parses_namespaced_and_plain_feature_types(fixture_direc
         assert request.url.params["request"] == "GetCapabilities"
         assert request.url.params["version"] == "1.1.0"
         assert request.url.params["key"] == "secret-key"
-        assert request.url.params["domain"] == "https://registered.example.com"
+        assert "domain" not in request.url.params
         return httpx.Response(200, content=capabilities)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
         layers = VWorldClient(
             "secret-key",
-            domain="https://registered.example.com",
             retries=0,
             client=http_client,
         ).discover_layers()

@@ -57,7 +57,6 @@ class VWorldClient:
         self,
         api_key: str,
         *,
-        domain: str | None = None,
         timeout: float = 30.0,
         retries: int = 3,
         backoff: float = 0.5,
@@ -97,7 +96,6 @@ class VWorldClient:
                 f"max_response_bytes must be between 1 and {DEFAULT_MAX_RESPONSE_BYTES}"
             )
         self._api_key = api_key.strip()
-        self._domain = domain
         self._retries = max(retries, 0)
         self._backoff = max(backoff, 0.0)
         self._page_size = max(page_size, 1)
@@ -313,7 +311,6 @@ class VWorldClient:
             "version": "1.1.0",
             "request": request,
             "key": self._api_key,
-            **({"domain": self._domain} if self._domain else {}),
             **params,
         }
 
@@ -401,7 +398,6 @@ class VWorldClient:
         page: int,
     ) -> dict[str, Any]:
         min_x, min_y, max_x, max_y = bounds
-        domain = {"domain": self._domain} if self._domain else {}
         if definition.service_type == "wfs":
             return {
                 "service": "WFS",
@@ -413,7 +409,6 @@ class VWorldClient:
                 "output": "application/json",
                 "maxFeatures": min(self._page_size, WFS_FEATURE_LIMIT),
                 "key": self._api_key,
-                **domain,
             }
         return {
             "service": "data",
@@ -428,7 +423,6 @@ class VWorldClient:
             "size": self._page_size,
             "page": page,
             "key": self._api_key,
-            **domain,
         }
 
     @staticmethod

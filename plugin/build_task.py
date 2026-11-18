@@ -111,9 +111,7 @@ class ProjectBuildTask(QgsTask):
             self.config,
             api_key=self._keys[0],
             data_go_kr_service_key=self._keys[1],
-            domain=None,
             on_progress=update,
-            use_native_project=False,
             check_cancelled=self._check_cancelled,
         )
 

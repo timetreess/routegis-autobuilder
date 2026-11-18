@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import colorsys
-from importlib import import_module
 from typing import NamedTuple
 from xml.etree import ElementTree as ET
 
@@ -107,43 +106,3 @@ def _categorized_renderer(
             outline_width="0.4",
         )
 
-
-def _apply_native_renderer(
-    qgis_layer,
-    layer: SpatialLayer,
-    *,
-    shapefile: bool,
-) -> bool:
-    if layer.name != "land_ownership":
-        return False
-    qgis_core = import_module("qgis.core")
-    QgsCategorizedSymbolRenderer = getattr(
-        qgis_core,
-        "QgsCategorizedSymbolRenderer",
-    )
-    QgsFillSymbol = getattr(qgis_core, "QgsFillSymbol")
-    QgsRendererCategory = getattr(qgis_core, "QgsRendererCategory")
-
-    categories = []
-    for style in _category_styles(layer, shapefile=shapefile):
-        symbol = QgsFillSymbol.createSimple(
-            {
-                "color": style.fill,
-                "outline_color": style.outline,
-                "outline_width": "0.4",
-                "outline_width_unit": "Point",
-            }
-        )
-        categories.append(
-            QgsRendererCategory(
-                style.value or "",
-                symbol,
-                style.label,
-                True,
-            )
-        )
-    qgis_layer.setRenderer(
-        QgsCategorizedSymbolRenderer(LAND_OWNERSHIP_FIELD, categories)
-    )
-    qgis_layer.setOpacity(LAND_OWNERSHIP_OPACITY)
-    return True

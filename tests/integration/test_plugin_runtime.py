@@ -52,7 +52,7 @@ def _assert_plugin_build(project_root, plugin_parent, package, output_directory)
     setattr(sys.modules["qgis.core"], "QgsTask", Task)
     sys.path.insert(0, plugin_parent)
     wizard = importlib.import_module(f"{package}.wizard")
-    fixture_provider = importlib.import_module(f"{package}.routegis.cli").FixtureProvider
+    fixture_provider = importlib.import_module(f"{package}.routegis.providers.fixture").FixtureProvider
     config = wizard.ProjectConfig(
         project_name="Upgrade regression",
         source_drawing=Path(project_root) / "tests" / "fixtures" / "sample_route.dxf",

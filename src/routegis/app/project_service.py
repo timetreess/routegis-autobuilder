@@ -393,16 +393,14 @@ class ProjectService:
             else chord_tolerance,
             on_progress=notify,
         )
-        from ..cad.route_detector import rank_candidates
-
-        inventory = reader.inventory(self.settings.snap_tolerance)
+        inventory = reader.inventory()
         notify(85, "CAD 레이어별 객체 수와 길이 집계 완료 · 실제 좌표 범위 확인 중")
         warnings = tuple(_cad_skip_issues(reader))
         if not inventory and reader.skipped_entities:
             raise CadReadError("도면의 지원 선 객체가 모두 길이 0이라 분석할 수 없습니다.")
         report = reader.coordinate_report()
         lines = reader.lines_by_layer()
-        candidates = [asdict(item) for item in rank_candidates(inventory)]
+        candidates = [asdict(item) for item in inventory]
         notify(100, f"도면 분석 완료 · CAD 레이어 {len(candidates)}개")
         self.last_cad_warnings = warnings
         self.last_coordinate_report = report
@@ -415,7 +413,6 @@ class ProjectService:
         *,
         api_key: str,
         data_go_kr_service_key: str,
-        domain: str | None,
         on_progress: Callable[[str], None] | None = None,
         check_cancelled: Callable[[], None] | None = None,
     ) -> SpatialDataProvider:
@@ -432,7 +429,6 @@ class ProjectService:
         if provider_name == "vworld":
             return VWorldClient(
                 api_key,
-                domain=domain,
                 timeout=self.settings.vworld_timeout,
                 retries=self.settings.vworld_retry,
                 backoff=self.settings.vworld_backoff,
@@ -466,10 +462,8 @@ class ProjectService:
         *,
         api_key: str = "",
         data_go_kr_service_key: str = "",
-        domain: str | None = None,
         provider: SpatialDataProvider | None = None,
         on_progress: Callable[[int, str], None] | None = None,
-        use_native_project: bool = True,
         check_cancelled: Callable[[], None] | None = None,
     ) -> PipelineResult:
         def notify(percent: int, message: str) -> None:
@@ -491,10 +485,8 @@ class ProjectService:
                 project_directory=staging,
                 api_key=api_key,
                 data_go_kr_service_key=data_go_kr_service_key,
-                domain=domain,
                 provider=provider,
                 on_progress=notify,
-                use_native_project=use_native_project,
                 check_cancelled=check_cancelled,
             )
             notify(99, "완성된 프로젝트를 최종 폴더에 저장 중")
@@ -532,10 +524,8 @@ class ProjectService:
         project_directory: Path,
         api_key: str,
         data_go_kr_service_key: str,
-        domain: str | None,
         provider: SpatialDataProvider | None,
         on_progress: Callable[[int, str], None],
-        use_native_project: bool,
         check_cancelled: Callable[[], None] | None,
     ) -> PipelineResult:
         secrets = (api_key, data_go_kr_service_key)
@@ -658,7 +648,7 @@ class ProjectService:
                 definitions, aoi, provider=provider,
                 create_provider=lambda name, progress, check: self._provider(
                     name, api_key=api_key, data_go_kr_service_key=data_go_kr_service_key,
-                    domain=domain if name == "vworld" else None, on_progress=progress, check_cancelled=check,
+                    on_progress=progress, check_cancelled=check,
                 ),
                 on_progress=download_progress, on_result=accept_download,
                 on_close_error=lambda exc: log.warning("공급자 종료 실패: %s", exc),
@@ -733,7 +723,6 @@ class ProjectService:
             config.source_crs,
             template_version=self.settings.qgis_template_version,
             layer_metadata=layer_metadata,
-            use_native=use_native_project,
         )
         report(90, "단일 HTML 웹 지도 생성 중 · 원본 CAD 제외")
         web_map_html = write_web_map(
@@ -764,7 +753,6 @@ class ProjectService:
                 "length_m": route.length,
                 "bbox": route.bbox,
                 "aoi_bbox": aoi.bounds,
-                "snap_tolerance": config.snap_tolerance,
                 "chord_tolerance": config.chord_tolerance,
             },
             "layers": [

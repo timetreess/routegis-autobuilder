@@ -3,7 +3,7 @@ from __future__ import annotations
 from xml.etree import ElementTree as ET
 
 from ..models import SpatialLayer
-from .categorized_renderer import _apply_native_renderer, _categorized_renderer
+from .categorized_renderer import _categorized_renderer
 from .renderer_symbols import _fill_symbol
 
 

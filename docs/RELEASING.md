@@ -16,9 +16,8 @@ The workflow requires all of the following to succeed:
 1. The shared CI suite on Python 3.9 and 3.12.
 2. Plugin version consistency and vendored dependency closure checks.
 3. Bandit, detect-secrets and pip-audit checks on the packaged plugin.
-4. Python wheel and source distribution builds, including strict Twine metadata validation.
-5. Installation of the built wheel in a clean environment and an offline CLI build with all six default layers, QGZ, GeoPackage and Shapefile output.
-6. Generation and verification of SHA-256 checksums for every release asset.
+4. Installation of the core package in a clean environment and an offline fixture build (`scripts/fixture_build.py`) with all six default layers, QGZ, HTML web map, GeoPackage and Shapefile output.
+5. Generation and verification of SHA-256 checksums for every release asset.
 
 The release preparation job reuses the exact plugin ZIP that passed the security checks. A manual run leaves **Publish tagged release** skipped and uploads `release-artifacts` for download from the Actions run.
 
@@ -27,8 +26,6 @@ The artifact contains:
 - `routegis_autobuilder.<version>.zip`: installable QGIS plugin.
 - `routegis_autobuilder.<version>.zip.sha256`: plugin checksum.
 - `plugins.xml`: QGIS repository metadata pointing to the eventual versioned GitHub Release.
-- `routegis_autobuilder-<version>-py3-none-any.whl`: CLI wheel.
-- `routegis_autobuilder-<version>.tar.gz`: Python source distribution.
 - `SHA256SUMS`: checksums using download-relative filenames; on Linux, run `sha256sum --check SHA256SUMS` from the download directory.
 
 Before publication, the URLs in `plugins.xml` will not resolve to downloadable release assets. In a private GitHub repository, releases and artifacts are available only to users with repository access; the generated unauthenticated QGIS feed is not a public distribution channel.
@@ -71,7 +68,8 @@ clean browser context with all networking disabled and with no companion files:
 
 ```powershell
 uv run --no-project --with playwright playwright install chromium
-uv run --no-project --with playwright tests/manual/web_map_smoke.py "build/wheel-smoke-output/release-smoke/release-smoke.html"
+python scripts/fixture_build.py build/fixture-output
+uv run --no-project --with playwright tests/manual/web_map_smoke.py "build/fixture-output/release-smoke/release-smoke.html"
 ```
 
 The check copies only the HTML to a temporary folder and verifies embedded feature

@@ -23,7 +23,6 @@ class ProjectConfig:
     selected_layers: tuple[str, ...]
     output_directory: Path
     export_shapefile: bool = True
-    snap_tolerance: float = 0.1
     chord_tolerance: float = 0.1
 
 

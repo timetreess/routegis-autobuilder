@@ -644,7 +644,6 @@ class RouteGISWizard(QWizard):
                 provider_name="vworld",
                 api_key=api_key,
                 data_go_kr_service_key="",
-                domain=None,
             )
             if not isinstance(provider, VWorldClient):
                 raise RouteGISError("VWorld 목록 공급자를 초기화할 수 없습니다.")
@@ -847,7 +846,6 @@ class RouteGISWizard(QWizard):
                 selected_layers=self._selected_layers(),
                 output_directory=self._output_directory(),
                 export_shapefile=True,
-                snap_tolerance=self.settings.snap_tolerance,
                 chord_tolerance=self.settings.chord_tolerance,
             )
             api_key = (

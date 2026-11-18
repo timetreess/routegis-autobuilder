@@ -240,7 +240,7 @@ def _assert_wizard_crs_choices(wizard: Any) -> None:
 
 
 def _configure_fixture_build(wizard: Any, project_root: Path, output_root: Path, provider=None) -> None:
-    FixtureProvider = _core_module("cli").FixtureProvider
+    FixtureProvider = _core_module("providers.fixture").FixtureProvider
 
     fixture = provider or FixtureProvider(project_root / "tests" / "fixtures" / "spatial_mock.json")
     real_build = wizard.service.build
@@ -249,8 +249,7 @@ def _configure_fixture_build(wizard: Any, project_root: Path, output_root: Path,
         assert config.source_crs == config.output_crs == "EPSG:5186"
         assert kwargs["api_key"] == FAKE_VWORLD_KEY
         assert kwargs["data_go_kr_service_key"] == FAKE_ECOLOGY_KEY
-        assert kwargs["domain"] is None
-        assert kwargs["use_native_project"] is False
+        assert "domain" not in kwargs
         return real_build(config, provider=fixture, **kwargs)
 
     wizard.service.build = fixture_build
@@ -532,7 +531,7 @@ def _assert_responsive_build(wizard_module, interface, project_root, temporary_r
     from time import monotonic
     from unittest.mock import patch
     from qgis.PyQt.QtCore import QTimer
-    FixtureProvider = _core_module("cli").FixtureProvider
+    FixtureProvider = _core_module("providers.fixture").FixtureProvider
 
     main_thread = get_ident()
     for cancel in (False, True):
@@ -636,7 +635,7 @@ def _assert_color(color: Any, expected: tuple[int, int, int, int]) -> None:
     assert color.getRgb() == expected
 
 
-def _assert_native_styles(project: Any) -> None:
+def _assert_project_styles(project: Any) -> None:
     qgis_core = importlib.import_module("qgis.core")
     QgsCategorizedSymbolRenderer = getattr(
         qgis_core,
@@ -697,75 +696,6 @@ def _assert_native_styles(project: Any) -> None:
     assert isinstance(renderer, QgsCategorizedSymbolRenderer)
     assert renderer.classAttribute() == "lbl"
     assert [category.value() for category in renderer.categories()] == ["개인"]
-
-
-def _assert_native_category_edge_values(temporary_root: Path) -> None:
-    write_geopackage = _core_module("gis.gpkg").write_geopackage
-    write_shapefile = _core_module("gis.shapefile").write_shapefile
-    SpatialFeature = _core_module("models").SpatialFeature
-    SpatialLayer = _core_module("models").SpatialLayer
-    _apply_native_renderer = _core_module("qgis.renderers")._apply_native_renderer
-    from shapely.geometry import Polygon
-
-    QgsVectorLayer = getattr(
-        importlib.import_module("qgis.core"),
-        "QgsVectorLayer",
-    )
-    QgsRenderContext = getattr(
-        importlib.import_module("qgis.core"),
-        "QgsRenderContext",
-    )
-    geometry = Polygon(
-        [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]
-    )
-    layer_spec = SpatialLayer(
-        "land_ownership",
-        "토지소유공간정보 경계값",
-        "EPSG:5186",
-        "Polygon",
-        "land",
-        [
-            SpatialFeature(geometry, {"lbl": "개인 "}, "edge-1"),
-            SpatialFeature(geometry, {"lbl": None}, "edge-2"),
-        ],
-    )
-    def assert_distinct_rendered_colors(layer: Any, *, shapefile: bool) -> None:
-        assert layer.isValid()
-        assert _apply_native_renderer(layer, layer_spec, shapefile=shapefile)
-        renderer = layer.renderer()
-        context = QgsRenderContext()
-        colors: list[tuple[int, int, int, int]] = []
-        renderer.startRender(context, layer.fields())
-        try:
-            rendered_symbols = [
-                renderer.symbolForFeature(feature, context)
-                for feature in layer.getFeatures()
-            ]
-            assert all(symbol is not None for symbol in rendered_symbols)
-            colors = [symbol.color().getRgb() for symbol in rendered_symbols]
-        finally:
-            renderer.stopRender(context)
-        assert len(colors) == len(set(colors)) == 2
-
-    shapefile_path = temporary_root / "category-edge.shp"
-    write_shapefile(shapefile_path, layer_spec)
-    assert_distinct_rendered_colors(
-        QgsVectorLayer(str(shapefile_path), layer_spec.display_name, "ogr"),
-        shapefile=True,
-    )
-
-    geopackage = write_geopackage(
-        temporary_root / "category-edge.gpkg",
-        [layer_spec],
-    )
-    assert_distinct_rendered_colors(
-        QgsVectorLayer(
-            f"{geopackage}|layername={layer_spec.name}",
-            layer_spec.display_name,
-            "ogr",
-        ),
-        shapefile=False,
-    )
 
 
 def _assert_loaded_project(project: Any, wizard: Any) -> None:
@@ -829,7 +759,7 @@ def _assert_loaded_project(project: Any, wizard: Any) -> None:
             continue
         assert all(layer.customProperty(name, "") == "" for name in QGIS_PROVIDER_PROPERTIES)
 
-    _assert_native_styles(project)
+    _assert_project_styles(project)
     assert wizard.vworld_api_key.text() == FAKE_VWORLD_KEY
     assert wizard.data_go_kr_service_key.text() == FAKE_ECOLOGY_KEY
 
@@ -1005,25 +935,22 @@ def _assert_first_publish_with_open_html(wizard_module: Any, project_root: Path,
 
 
 def _assert_headless_project_layout(project_root: Path, temporary_root: Path) -> None:
-    from unittest.mock import patch
-
     ProjectService = _core_module("app.project_service").ProjectService
-    FixtureProvider = _core_module("cli").FixtureProvider
+    FixtureProvider = _core_module("providers.fixture").FixtureProvider
     ProjectConfig = _core_module("models").ProjectConfig
     LayerCatalog = _core_module("providers").LayerCatalog
     from qgis.core import QgsProject
 
-    with patch.object(_core_module("qgis.project"), "_native_project", return_value=False):
-        result = ProjectService().build(
-            ProjectConfig(
-                project_name="Headless layout smoke",
-                source_drawing=project_root / "tests" / "fixtures" / "sample_route.dxf",
-                source_crs="EPSG:5186", output_crs="EPSG:5186",
-                buffer_distance=1000, selected_layers=DEFAULT_LAYER_IDS,
-                output_directory=temporary_root / "headless",
-            ),
-            provider=FixtureProvider(project_root / "tests" / "fixtures" / "spatial_mock.json"),
-        )
+    result = ProjectService().build(
+        ProjectConfig(
+            project_name="Headless layout smoke",
+            source_drawing=project_root / "tests" / "fixtures" / "sample_route.dxf",
+            source_crs="EPSG:5186", output_crs="EPSG:5186",
+            buffer_distance=1000, selected_layers=DEFAULT_LAYER_IDS,
+            output_directory=temporary_root / "headless",
+        ),
+        provider=FixtureProvider(project_root / "tests" / "fixtures" / "spatial_mock.json"),
+    )
 
     project = QgsProject.instance()
     assert project.read(str(result.project_file))
@@ -1077,60 +1004,58 @@ def _assert_layer_crs_updates(project_root: Path, temporary_root: Path) -> None:
 
     try:
         canvas.show()
-        for native in (False, True):
-            for shapefile in (True, False):
-                result = ProjectService().build(
-                    ProjectConfig(
-                        project_name=f"Layer CRS {native} {shapefile}",
-                        source_drawing=project_root / "tests" / "fixtures" / "sample_route.dxf",
-                        source_crs="EPSG:5186", output_crs="EPSG:5186",
-                        buffer_distance=1000, selected_layers=(),
-                        output_directory=temporary_root / "layer-crs", export_shapefile=shapefile,
-                    ),
-                    use_native_project=native,
-                )
-                assert project.read(str(result.project_file))
-                assert project.crs() == original_crs, "Generated project lost its CRS; reprojection is disabled"
-                canvas.setDestinationCrs(project.crs())
-                layer = project.mapLayersByName("선형")[0]
-                coordinates = next(layer.getFeatures()).geometry().asWkb()
-                canvas.setLayers([layer])
-                extent = layer.extent()
-                extent.scale(1.2)
-                canvas.setExtent(extent)
-                previous_count = len(rendered)
-                canvas.refresh()
-                before = wait_for_render(previous_count)
+        for shapefile in (True, False):
+            result = ProjectService().build(
+                ProjectConfig(
+                    project_name=f"Layer CRS {shapefile}",
+                    source_drawing=project_root / "tests" / "fixtures" / "sample_route.dxf",
+                    source_crs="EPSG:5186", output_crs="EPSG:5186",
+                    buffer_distance=1000, selected_layers=(),
+                    output_directory=temporary_root / "layer-crs", export_shapefile=shapefile,
+                ),
+            )
+            assert project.read(str(result.project_file))
+            assert project.crs() == original_crs, "Generated project lost its CRS; reprojection is disabled"
+            canvas.setDestinationCrs(project.crs())
+            layer = project.mapLayersByName("선형")[0]
+            coordinates = next(layer.getFeatures()).geometry().asWkb()
+            canvas.setLayers([layer])
+            extent = layer.extent()
+            extent.scale(1.2)
+            canvas.setExtent(extent)
+            previous_count = len(rendered)
+            canvas.refresh()
+            before = wait_for_render(previous_count)
 
-                properties = QgsVectorLayerProperties(canvas, QgsMessageBar(canvas), layer, canvas)
-                selector = properties.findChild(QObject, "mCrsSelector")
-                assert selector is not None
-                selector = sip.cast(selector, QgsProjectionSelectionWidget)
-                selector.setCrs(changed_crs)
-                previous_count = len(rendered)
-                apply_buttons = [
-                    box.button(QDialogButtonBox.Apply)
-                    for box in properties.findChildren(QDialogButtonBox)
-                    if box.button(QDialogButtonBox.Apply) is not None
-                ]
-                assert len(apply_buttons) == 1
-                apply_buttons[0].click()
-                wait_for_render(previous_count, before)
-                assert next(layer.getFeatures()).geometry().asWkb() == coordinates
-                assert project.crs() == original_crs
-                assert layer.crs() == changed_crs
-                properties.close()
-                properties.deleteLater()
-                QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            properties = QgsVectorLayerProperties(canvas, QgsMessageBar(canvas), layer, canvas)
+            selector = properties.findChild(QObject, "mCrsSelector")
+            assert selector is not None
+            selector = sip.cast(selector, QgsProjectionSelectionWidget)
+            selector.setCrs(changed_crs)
+            previous_count = len(rendered)
+            apply_buttons = [
+                box.button(QDialogButtonBox.Apply)
+                for box in properties.findChildren(QDialogButtonBox)
+                if box.button(QDialogButtonBox.Apply) is not None
+            ]
+            assert len(apply_buttons) == 1
+            apply_buttons[0].click()
+            wait_for_render(previous_count, before)
+            assert next(layer.getFeatures()).geometry().asWkb() == coordinates
+            assert project.crs() == original_crs
+            assert layer.crs() == changed_crs
+            properties.close()
+            properties.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
-                assert project.write()
-                canvas.stopRendering()
-                canvas.setLayers([])
-                assert project.read(str(result.project_file))
-                reopened = project.mapLayersByName("선형")[0]
-                assert reopened.crs() == changed_crs
-                assert project.crs() == original_crs
-                project.clear()
+            assert project.write()
+            canvas.stopRendering()
+            canvas.setLayers([])
+            assert project.read(str(result.project_file))
+            reopened = project.mapLayersByName("선형")[0]
+            assert reopened.crs() == changed_crs
+            assert project.crs() == original_crs
+            project.clear()
     finally:
         canvas.stopRendering()
         canvas.setLayers([])
@@ -1141,11 +1066,8 @@ def _assert_layer_crs_updates(project_root: Path, temporary_root: Path) -> None:
 
 
 def _assert_empty_result_group_labels(project_root: Path, temporary_root: Path) -> None:
-    from contextlib import nullcontext
-    from unittest.mock import patch
-
     ProjectService = _core_module("app.project_service").ProjectService
-    FixtureProvider = _core_module("cli").FixtureProvider
+    FixtureProvider = _core_module("providers.fixture").FixtureProvider
     ProjectConfig = _core_module("models").ProjectConfig
     LayerCatalog = _core_module("providers").LayerCatalog
     from qgis.core import QgsProject
@@ -1166,28 +1088,25 @@ def _assert_empty_result_group_labels(project_root: Path, temporary_root: Path) 
         for name in EXPECTED_GROUPS
     )
     catalog = LayerCatalog()
-    for native in (True, False):
-        context = nullcontext() if native else patch.object(_core_module("qgis.project"), "_native_project", return_value=False)
-        with context:
-            result = ProjectService().build(
-                ProjectConfig(
-                    project_name=f"Empty groups {native}",
-                    source_drawing=project_root / "tests" / "fixtures" / "sample_route.dxf",
-                    source_crs="EPSG:5186", output_crs="EPSG:5186",
-                    buffer_distance=1000, selected_layers=DEFAULT_LAYER_IDS,
-                    output_directory=temporary_root / "empty-groups",
-                ),
-                provider=EmptyFixture(project_root / "tests" / "fixtures" / "spatial_mock.json"),
-            )
-        project = QgsProject.instance()
-        assert project.read(str(result.project_file))
-        root = project.layerTreeRoot()
-        assert tuple(child.name() for child in root.children()) == expected
-        for layer_id in DEFAULT_LAYER_IDS:
-            layers = project.mapLayersByName(catalog.get(layer_id).name)
-            assert len(layers) == 1 and layers[0].isValid()
-            assert (layers[0].featureCount() == 0) == (layer_id in empty_ids)
-        assert not root.findGroup("06_행정구역").children()
+    result = ProjectService().build(
+        ProjectConfig(
+            project_name="Empty groups",
+            source_drawing=project_root / "tests" / "fixtures" / "sample_route.dxf",
+            source_crs="EPSG:5186", output_crs="EPSG:5186",
+            buffer_distance=1000, selected_layers=DEFAULT_LAYER_IDS,
+            output_directory=temporary_root / "empty-groups",
+        ),
+        provider=EmptyFixture(project_root / "tests" / "fixtures" / "spatial_mock.json"),
+    )
+    project = QgsProject.instance()
+    assert project.read(str(result.project_file))
+    root = project.layerTreeRoot()
+    assert tuple(child.name() for child in root.children()) == expected
+    for layer_id in DEFAULT_LAYER_IDS:
+        layers = project.mapLayersByName(catalog.get(layer_id).name)
+        assert len(layers) == 1 and layers[0].isValid()
+        assert (layers[0].featureCount() == 0) == (layer_id in empty_ids)
+    assert not root.findGroup("06_행정구역").children()
 
 
 def _stage(name: str) -> None:
@@ -1318,8 +1237,6 @@ def run(project_root: Path, plugin_directory: Path, previous_plugin_directory: P
             _assert_loaded_project(QgsProject.instance(), wizard)
             _stage("layer CRS updates")
             _assert_layer_crs_updates(project_root, temporary_root)
-            _stage("native category edge values")
-            _assert_native_category_edge_values(temporary_root)
             _stage("headless project layout")
             _assert_headless_project_layout(project_root, temporary_root)
             _stage("first publication with read-locked HTML")
