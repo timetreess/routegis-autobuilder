@@ -42,6 +42,20 @@ where = ["src"]
 [tool.setuptools.package-data]
 routegis = ["resources/*.yaml", "resources/presets/*.yaml", "resources/web/*", "resources/web/leaflet/*", "resources/web/leaflet/images/*.png"]
 
+[tool.ruff]
+target-version = "py39"
+
+[tool.ruff.lint]
+# Errors and likely bugs only: syntax/undefined names (E4, E7, E9, F) and bugbear (B).
+select = ["E4", "E7", "E9", "F", "B"]
+# getattr/setattr with constant names are deliberate on dynamically imported QGIS modules and stubs.
+ignore = ["B009", "B010"]
+
+[tool.ruff.lint.per-file-ignores]
+# Callbacks defined in a loop run within the same iteration (timers, task hooks).
+"tests/manual/qgis_smoke.py" = ["B023"]
+"tests/unit/test_threading_compat.py" = ["B023"]
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]

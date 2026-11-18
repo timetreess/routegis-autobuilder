@@ -14,10 +14,9 @@ from pyproj import Transformer
 from pyproj.exceptions import ProjError
 from shapely.errors import ShapelyError
 from shapely.geometry import mapping
-from shapely.ops import transform
 
 from .errors import ExportError
-from .gis.crs import transform_bounds
+from .gis.crs import transform_bounds, transform_coordinates
 from .models import DownloadResult, SpatialLayer
 from .qgis.project_schema import group_for
 from .styles import (
@@ -144,7 +143,7 @@ def write_web_map(
                 converter = Transformer.from_crs(layer.crs, "EPSG:4326", always_xy=True)
                 output.write(f'<script id="routegis-data-{index}" type="application/json">{{"type":"FeatureCollection","features":[')
                 for feature_index, feature in enumerate(layer.features):
-                    geometry = transform(converter.transform, feature.geometry)
+                    geometry = transform_coordinates(converter, feature.geometry)
                     item = {"type": "Feature", "geometry": mapping(geometry), "properties": clean(feature.properties)}
                     if feature.feature_id is not None:
                         item["id"] = clean_text(str(feature.feature_id))

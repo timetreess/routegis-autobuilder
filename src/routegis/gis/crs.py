@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import numpy as np
+import shapely
 from shapely.geometry import LineString, Point, box
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import transform, unary_union
+from shapely.ops import unary_union
 
 from ..errors import CrsError
 from ..models import SpatialFeature, SpatialLayer, ValidationIssue
@@ -71,6 +73,20 @@ def validate_projected_metre_crs(crs: str) -> None:
         raise CrsError("선택한 좌표계의 단위가 미터가 아닙니다.")
 
 
+def transform_coordinates(transformer, geometry: BaseGeometry) -> BaseGeometry:
+    """Apply a pyproj ``Transformer`` to every coordinate, keeping Z when present."""
+    include_z = geometry.has_z
+
+    def apply(coordinates: np.ndarray) -> np.ndarray:
+        if include_z:
+            x, y, z = transformer.transform(coordinates[:, 0], coordinates[:, 1], coordinates[:, 2])
+            return np.column_stack((x, y, z))
+        x, y = transformer.transform(coordinates[:, 0], coordinates[:, 1])
+        return np.column_stack((x, y))
+
+    return shapely.transform(geometry, apply, include_z=include_z)
+
+
 def transform_geometry(geometry: BaseGeometry, source_crs: str, target_crs: str) -> BaseGeometry:
     source = normalize_crs(source_crs)
     target = normalize_crs(target_crs)
@@ -79,7 +95,7 @@ def transform_geometry(geometry: BaseGeometry, source_crs: str, target_crs: str)
     _, Transformer = _pyproj()
     try:
         transformer = Transformer.from_crs(source, target, always_xy=True)
-        return transform(transformer.transform, geometry)
+        return transform_coordinates(transformer, geometry)
     except Exception as exc:
         raise CrsError(f"좌표변환에 실패했습니다: {source} → {target}") from exc
 
@@ -136,7 +152,7 @@ def transform_layer(layer: SpatialLayer, target_crs: str) -> SpatialLayer:
         if transformer is None:
             return geometry
         try:
-            return transform(transformer.transform, geometry)
+            return transform_coordinates(transformer, geometry)
         except Exception as exc:
             raise CrsError(f"좌표변환에 실패했습니다: {source} → {target}") from exc
 

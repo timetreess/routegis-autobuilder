@@ -1,6 +1,6 @@
 import pytest
 from shapely.errors import GEOSException
-from shapely.geometry import LineString, MultiPolygon, Point
+from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 
 import routegis.gis.crs as crs_module
@@ -218,3 +218,33 @@ def test_empty_line_geometries_cannot_form_an_analysis_area():
 
     with pytest.raises(CrsError, match="분석 범위"):
         create_aoi_layer(route, 1000)
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        Point(200000, 489013),
+        LineString([(200000, 489013), (201000, 489500)]),
+        LineString([(200000, 489013, 12.5), (201000, 489500, 30.0)]),
+        Polygon([(200000, 489000), (201000, 489000), (201000, 490000), (200000, 489000)]),
+    ],
+)
+def test_transform_coordinates_matches_per_point_transform_and_keeps_z(geometry):
+    from pyproj import Transformer
+
+    from routegis.gis.crs import transform_coordinates
+
+    transformer = Transformer.from_crs("EPSG:5186", "EPSG:4326", always_xy=True)
+    result = transform_coordinates(transformer, geometry)
+
+    expected = [transformer.transform(*coordinate) for coordinate in shapely_coordinates(geometry)]
+    assert result.geom_type == geometry.geom_type
+    assert result.has_z == geometry.has_z
+    flat = [value for coordinate in shapely_coordinates(result) for value in coordinate]
+    assert flat == pytest.approx([value for coordinate in expected for value in coordinate], abs=1e-12)
+
+
+def shapely_coordinates(geometry):
+    import shapely
+
+    return [tuple(row) for row in shapely.get_coordinates(geometry, include_z=geometry.has_z)]

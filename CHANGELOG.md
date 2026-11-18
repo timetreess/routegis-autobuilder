@@ -6,6 +6,13 @@ The public repository starts with version 0.2.3. Earlier entries describe the ap
 
 ## [Unreleased]
 
+### Changed
+
+- The Wizard result summary now reports the outputs that were actually written: the GeoPackage and QGIS project paths, the number of Shapefiles, and layers that fell back to GeoPackage because of EUC-KR encoding.
+- Generate the `style/*.qml` files from the same style definitions as the project and web map. Their colours, widths and units now match what the generated QGIS project displays (for example the cadastral outline).
+- Keep the release version only in `src/routegis/__init__.py`; the plugin build writes it into the packaged `metadata.txt`.
+- Run blocking Ruff checks in CI and replace the deprecated `shapely.ops.transform` with `shapely.transform`, preserving Z coordinates.
+
 ### Removed
 
 - Remove the unused centerline-selection (`linear`) project type, the CLI `--route-layer` and `--project-type` options, and route assembly. Every valid DXF line object is always used for the analysis area, as in the Wizard.
