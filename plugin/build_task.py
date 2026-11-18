@@ -49,9 +49,13 @@ class DrawingAnalysisTask(QgsTask):
         service = ProjectService(self.settings)
         analysis = service.analyze_drawing(self.drawing, on_progress=update)
         update(100, "사업 지역과 실제 DXF 좌표로 좌표계 후보 찾는 중")
-        report = analysis.coordinate_report
+        coordinate_report = analysis.coordinate_report
         # A drawing without supported linework has no coordinate range to match.
-        recommendations = recommend_crs(report.bounds, self.region) if report is not None else []
+        recommendations = (
+            recommend_crs(coordinate_report.bounds, self.region)
+            if coordinate_report is not None
+            else []
+        )
         update(100, "좌표계 후보 준비 완료 · 지도 미리보기 준비 중")
         return {"analysis": analysis, "recommendations": recommendations}
 
