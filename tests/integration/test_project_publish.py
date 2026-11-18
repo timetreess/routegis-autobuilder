@@ -194,9 +194,8 @@ def test_failed_copy_removes_only_its_partial_destination_and_keeps_complete_sou
 def config(tmp_path, fixture_directory):
     return ProjectConfig(
         project_name="Publish", source_drawing=fixture_directory / "sample_route.dxf",
-        source_layers=(), source_crs="EPSG:5186", output_crs="EPSG:5186",
+        source_crs="EPSG:5186", output_crs="EPSG:5186",
         buffer_distance=1000, selected_layers=(), output_directory=tmp_path,
-        project_type="non_linear",
     )
 
 

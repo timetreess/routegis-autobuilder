@@ -246,8 +246,6 @@ def _configure_fixture_build(wizard: Any, project_root: Path, output_root: Path,
     real_build = wizard.service.build
 
     def fixture_build(config: Any, **kwargs: Any) -> Any:
-        assert config.project_type == "non_linear"
-        assert config.source_layers == ()
         assert config.source_crs == config.output_crs == "EPSG:5186"
         assert kwargs["api_key"] == FAKE_VWORLD_KEY
         assert kwargs["data_go_kr_service_key"] == FAKE_ECOLOGY_KEY
@@ -266,7 +264,7 @@ def _configure_fixture_build(wizard: Any, project_root: Path, output_root: Path,
     wizard.buffer_distance.setValue(1000)
     wizard._analyze()
     _wait_for_analysis(wizard)
-    assert wizard.project_type == "non_linear"
+    assert wizard.drawing_analyzed
     assert wizard.candidate_table.rowCount() > 0
     wizard.vworld_api_key.setText(FAKE_VWORLD_KEY)
     wizard.data_go_kr_service_key.setText(FAKE_ECOLOGY_KEY)
@@ -307,7 +305,7 @@ def _assert_responsive_analysis(wizard_module, interface, temporary_root):
         started = monotonic()
         wizard.next()
         assert monotonic() - started < 0.5
-        assert wizard.project_type is None and wizard._analysis_task is None
+        assert not wizard.drawing_analyzed and wizard._analysis_task is None
         assert wizard.analyze_button.isEnabled()
         waiting, release = Event(), Event()
         ticks, percentages = [], []
@@ -349,11 +347,11 @@ def _assert_responsive_analysis(wizard_module, interface, temporary_root):
             assert len(ticks) >= 5
             assert wizard.analyze_button.isEnabled() and not wizard._analysis_timer.isActive()
             if cancel:
-                assert wizard.project_type is None and not wizard.service.last_cad_lines
+                assert not wizard.drawing_analyzed and not wizard.service.last_cad_lines
                 assert wizard._preview.line_layer is None
                 assert "취소" in wizard.analysis_stage.text()
             else:
-                assert wizard.project_type == "non_linear"
+                assert wizard.drawing_analyzed
                 assert wizard._preview.line_layer.featureCount() == 20_000
                 assert wizard.analysis_progress.value() == 100
                 assert percentages == sorted(percentages)
@@ -391,10 +389,10 @@ def _assert_cad_preview(wizard_module, interface, temporary_root):
         wizard.next()  # Navigation must not read the DXF on the GUI thread.
         QApplication.processEvents()
         assert wizard.currentId() == wizard._cad_page_id
-        assert wizard.project_type is None and wizard._analysis_task is None
+        assert not wizard.drawing_analyzed and wizard._analysis_task is None
         wizard.analyze_button.click()
         _wait_for_analysis(wizard)
-        assert wizard.project_type == "non_linear"
+        assert wizard.drawing_analyzed
         assert wizard._crs_code(wizard.source_crs) == "EPSG:5186"
         assert wizard.crs_recommendations.count() > 0
         assert "DXF 실제 좌표" in wizard.coordinate_report.text()
@@ -444,7 +442,7 @@ def _assert_cad_preview(wizard_module, interface, temporary_root):
         assert wizard.preview_canvas.layers()[0] is layer
 
         wizard.business_region.setCurrentText("전북특별자치도")
-        assert wizard.project_type is None
+        assert not wizard.drawing_analyzed
         assert not wizard.preview_canvas.layers()
         assert preview.line_layer is None
         wizard._analyze()
@@ -455,7 +453,7 @@ def _assert_cad_preview(wizard_module, interface, temporary_root):
         with patch.object(wizard_module.QMessageBox, "critical", lambda _, title, message: errors.append(message)):
             wizard._analyze()
             _wait_for_analysis(wizard)
-        assert errors and wizard.project_type is None
+        assert errors and not wizard.drawing_analyzed
         assert preview.line_layer is None and not wizard.preview_canvas.layers()
         assert wizard.crs_recommendations.count() == 0
         assert set(QgsProject.instance().mapLayers()) == existing_ids
@@ -967,8 +965,8 @@ def _assert_first_publish_with_open_html(wizard_module: Any, project_root: Path,
     output = temporary_root / "publish-read-lock"
     config = ProjectConfig(
         project_name="Read lock", source_drawing=project_root / "tests/fixtures/sample_route.dxf",
-        source_layers=(), source_crs="EPSG:5186", output_crs="EPSG:5186",
-        buffer_distance=1000, selected_layers=(), output_directory=output, project_type="non_linear",
+        source_crs="EPSG:5186", output_crs="EPSG:5186",
+        buffer_distance=1000, selected_layers=(), output_directory=output,
     )
     service = ProjectService()
     build = service.build
@@ -1020,9 +1018,9 @@ def _assert_headless_project_layout(project_root: Path, temporary_root: Path) ->
             ProjectConfig(
                 project_name="Headless layout smoke",
                 source_drawing=project_root / "tests" / "fixtures" / "sample_route.dxf",
-                source_layers=(), source_crs="EPSG:5186", output_crs="EPSG:5186",
+                source_crs="EPSG:5186", output_crs="EPSG:5186",
                 buffer_distance=1000, selected_layers=DEFAULT_LAYER_IDS,
-                output_directory=temporary_root / "headless", project_type="non_linear",
+                output_directory=temporary_root / "headless",
             ),
             provider=FixtureProvider(project_root / "tests" / "fixtures" / "spatial_mock.json"),
         )
@@ -1085,8 +1083,8 @@ def _assert_layer_crs_updates(project_root: Path, temporary_root: Path) -> None:
                     ProjectConfig(
                         project_name=f"Layer CRS {native} {shapefile}",
                         source_drawing=project_root / "tests" / "fixtures" / "sample_route.dxf",
-                        source_layers=(), source_crs="EPSG:5186", output_crs="EPSG:5186",
-                        buffer_distance=1000, selected_layers=(), project_type="non_linear",
+                        source_crs="EPSG:5186", output_crs="EPSG:5186",
+                        buffer_distance=1000, selected_layers=(),
                         output_directory=temporary_root / "layer-crs", export_shapefile=shapefile,
                     ),
                     use_native_project=native,
@@ -1175,9 +1173,9 @@ def _assert_empty_result_group_labels(project_root: Path, temporary_root: Path) 
                 ProjectConfig(
                     project_name=f"Empty groups {native}",
                     source_drawing=project_root / "tests" / "fixtures" / "sample_route.dxf",
-                    source_layers=(), source_crs="EPSG:5186", output_crs="EPSG:5186",
+                    source_crs="EPSG:5186", output_crs="EPSG:5186",
                     buffer_distance=1000, selected_layers=DEFAULT_LAYER_IDS,
-                    output_directory=temporary_root / "empty-groups", project_type="non_linear",
+                    output_directory=temporary_root / "empty-groups",
                 ),
                 provider=EmptyFixture(project_root / "tests" / "fixtures" / "spatial_mock.json"),
             )

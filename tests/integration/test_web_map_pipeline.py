@@ -14,9 +14,9 @@ from routegis.models import ProjectConfig
 def config(tmp_path, fixture_directory):
     return ProjectConfig(
         project_name="Web map", source_drawing=fixture_directory / "sample_route.dxf",
-        source_layers=(), source_crs="EPSG:5186", output_crs="EPSG:5186",
+        source_crs="EPSG:5186", output_crs="EPSG:5186",
         buffer_distance=1000, selected_layers=("cadastral", "building"),
-        output_directory=tmp_path, project_type="non_linear",
+        output_directory=tmp_path,
     )
 
 

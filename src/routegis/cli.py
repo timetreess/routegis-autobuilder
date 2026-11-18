@@ -79,16 +79,9 @@ def _parser() -> argparse.ArgumentParser:
     analyze.add_argument("--chord-tolerance", type=float, default=None, help="곡선 선형화 허용오차")
 
     build = subparsers.add_parser("build", help="RouteGIS 프로젝트를 생성합니다.")
-    build.add_argument("drawing", type=Path, help="DWG 또는 DXF 노선도면")
+    build.add_argument("drawing", type=Path, help="DXF 노선도면")
     build.add_argument("--project-name", required=True, help="사업명")
     build.add_argument("--output", type=Path, required=True, help="프로젝트를 생성할 상위 폴더")
-    build.add_argument("--route-layer", default="", help="선형 사업에서 사용할 쉼표 구분 노선 CAD 레이어")
-    build.add_argument(
-        "--project-type",
-        choices=("linear", "non_linear"),
-        default="linear",
-        help="사업 유형 (기본: linear)",
-    )
     build.add_argument("--source-crs", required=True, help="사용자가 확인한 원본 좌표계 (예: EPSG:5186)")
     build.add_argument("--output-crs", default=None, help="결과 좌표계 (기본: config.yaml)")
     build.add_argument("--buffer", type=float, default=None, help="사업구간 주변 범위(m)")
@@ -96,7 +89,6 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument("--layers", help="프로필 대신 사용할 쉼표 구분 레이어 ID")
     build.add_argument("--domain", help="VWorld API Key 등록 도메인")
     build.add_argument("--api-key-env", default="VWORLD_API_KEY", help="API Key를 읽을 환경변수명")
-    build.add_argument("--dwg-converter", type=Path, help="외부 DWG→DXF 변환기")
     build.add_argument("--fixture", type=Path, help="실제 API 대신 사용할 오프라인 GeoJSON Fixture")
     build.add_argument("--no-shp", action="store_true", help="호환용 Shapefile 생성을 생략합니다.")
     return parser
@@ -117,7 +109,6 @@ def _run_build(args: argparse.Namespace) -> int:
     config = ProjectConfig(
         project_name=args.project_name,
         source_drawing=args.drawing.resolve(),
-        source_layers=tuple(item.strip() for item in args.route_layer.split(",") if item.strip()),
         source_crs=args.source_crs.upper(),
         output_crs=(args.output_crs or settings.default_output_crs).upper(),
         buffer_distance=(
@@ -128,8 +119,6 @@ def _run_build(args: argparse.Namespace) -> int:
         export_shapefile=not args.no_shp,
         snap_tolerance=settings.snap_tolerance,
         chord_tolerance=settings.chord_tolerance,
-        dwg_converter=args.dwg_converter.resolve() if args.dwg_converter else None,
-        project_type=args.project_type,
     )
     provider = FixtureProvider(args.fixture) if args.fixture else None
     api_key = ""

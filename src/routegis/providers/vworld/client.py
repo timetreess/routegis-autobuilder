@@ -869,11 +869,3 @@ class VWorldClient:
         except (ProviderError, CrsError) as exc:
             return context.failed_result(definition.id, self._redact(str(exc)))
 
-    def fetch_many(self, definitions: list[LayerDefinition], aoi: SpatialLayer) -> list[DownloadResult]:
-        results: list[DownloadResult] = []
-        for definition in definitions:
-            try:
-                results.append(self.fetch_layer(definition, aoi))
-            except ProviderError as exc:
-                results.append(DownloadResult(layer_id=definition.id, status="failed", error=self._redact(str(exc))))
-        return results

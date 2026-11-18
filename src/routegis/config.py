@@ -41,8 +41,6 @@ class AppSettings:
     osm_retry: int
     snap_tolerance: float
     chord_tolerance: float
-    export_geopackage: bool
-    export_shapefile: bool
     qgis_template_version: str
 
 
@@ -91,8 +89,6 @@ def load_settings(path: Path | None = None) -> AppSettings:
             osm_retry=int(data["osm"]["retry"]),
             snap_tolerance=float(data["cad"]["snap_tolerance"]),
             chord_tolerance=float(data["cad"]["chord_tolerance"]),
-            export_geopackage=bool(data["export"]["geopackage"]),
-            export_shapefile=bool(data["export"]["shapefile"]),
             qgis_template_version=str(data["qgis"]["template_version"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -149,16 +145,8 @@ def validate_project_config(config: ProjectConfig, catalog: dict[str, LayerDefin
     safe_project_name(config.project_name)
     if not config.source_drawing.is_file():
         raise ConfigurationError(f"도면 파일을 찾을 수 없습니다: {config.source_drawing}")
-    if config.source_drawing.suffix.lower() not in {".dxf", ".dwg"}:
-        raise ConfigurationError("도면 파일은 DWG 또는 DXF 형식이어야 합니다.")
-    if config.project_type not in {"linear", "non_linear"}:
-        raise ConfigurationError(f"지원하지 않는 사업 유형입니다: {config.project_type}")
-    if config.project_type == "linear" and (
-        not config.source_layers or any(not layer.strip() for layer in config.source_layers)
-    ):
-        raise ConfigurationError("노선 레이어를 선택해 주세요.")
-    if len(set(config.source_layers)) != len(config.source_layers):
-        raise ConfigurationError("노선 레이어가 중복 선택되었습니다.")
+    if config.source_drawing.suffix.lower() != ".dxf":
+        raise ConfigurationError("도면 파일은 DXF 형식이어야 합니다.")
     if len(set(config.selected_layers)) != len(config.selected_layers):
         raise ConfigurationError("공간정보가 중복 선택되었습니다.")
     for crs in (config.source_crs, config.output_crs):
@@ -171,5 +159,3 @@ def validate_project_config(config: ProjectConfig, catalog: dict[str, LayerDefin
     unknown = sorted(set(config.selected_layers) - set(catalog))
     if unknown:
         raise ConfigurationError(f"카탈로그에 없는 공간정보입니다: {', '.join(unknown)}")
-    if config.source_drawing.suffix.lower() == ".dwg" and config.dwg_converter is None:
-        raise ConfigurationError("DWG 파일을 사용하려면 외부 DWG→DXF 변환기를 지정해 주세요.")

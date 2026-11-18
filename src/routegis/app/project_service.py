@@ -16,7 +16,6 @@ from typing import Any
 
 from shapely.geometry import LineString
 
-from ..cad.converter import DwgConverter
 from ..cad.reader import DxfCoordinateReport, DxfReader
 from ..config import AppSettings, load_settings, safe_project_name, validate_project_config
 from ..errors import (
@@ -35,7 +34,6 @@ from ..gis.crs import (
 )
 from ..gis.export import export_layers
 from ..gis.geometry import create_aoi_layer, create_linework_layer
-from ..gis.shapefile import write_shapefile
 from ..gis.validator import validate_layer, validate_layer_intersects_aoi, validate_route_and_aoi
 from ..models import (
     DownloadResult,
@@ -44,7 +42,6 @@ from ..models import (
     PipelineState,
     ProjectConfig,
     RouteGeometry,
-    SpatialFeature,
     SpatialLayer,
     ValidationIssue,
 )
@@ -101,7 +98,7 @@ def _close_project_logger(project_directory: Path) -> None:
 
 PROJECT_DIRECTORIES = (
     "source",
-    "data/raw",
+    "data",
     "shp/route",
     "shp/cadastral",
     "shp/land",
@@ -412,50 +409,6 @@ class ProjectService:
         self.last_cad_lines = lines
         return candidates
 
-    def create_preview_shapefiles(
-        self,
-        drawing: Path,
-        *,
-        source_crs: str,
-        output_directory: Path,
-    ) -> dict[str, Path]:
-        validate_projected_metre_crs(source_crs)
-        reader = DxfReader(drawing, self.settings.chord_tolerance)
-        lines_by_layer = reader.lines_by_layer()
-        self.last_cad_warnings = tuple(_cad_skip_issues(reader))
-        if not lines_by_layer:
-            if reader.skipped_entities:
-                raise CadReadError("도면의 지원 선 객체가 모두 길이 0이라 미리보기를 만들 수 없습니다.")
-            raise RouteGISError("미리보기로 만들 수 있는 선 객체가 없습니다.")
-        output_directory.mkdir(parents=True, exist_ok=True)
-        paths: dict[str, Path] = {}
-        for index, layer_name in enumerate(sorted(lines_by_layer, key=str.casefold), start=1):
-            preview_layer = SpatialLayer(
-                name=f"preview_{index:03d}",
-                display_name=layer_name,
-                crs=source_crs,
-                geometry_type="LineString",
-                category="source",
-                features=[
-                    SpatialFeature(
-                        line,
-                        {
-                            "source_layer": layer_name,
-                            "entity_index": entity_index,
-                            "length_m": line.length,
-                        },
-                        f"{index}-{entity_index}",
-                    )
-                    for entity_index, line in enumerate(lines_by_layer[layer_name], start=1)
-                ],
-                source="cad_preview",
-            )
-            filename = f"{index:03d}_{safe_project_name(layer_name)}.shp"
-            path = output_directory / filename
-            write_shapefile(path, preview_layer)
-            paths[layer_name] = path
-        return paths
-
     def _provider(
         self,
         provider_name: str,
@@ -597,17 +550,9 @@ class ProjectService:
         source_copy = project_directory / "source" / config.source_drawing.name
         shutil.copy2(config.source_drawing, source_copy)
         source_digest = _sha256(source_copy)
-        dxf_path = source_copy
-        if source_copy.suffix.lower() == ".dwg":
-            if config.dwg_converter is None:
-                raise RouteGISError("DWG 변환기가 지정되지 않았습니다.")
-            dxf_path = DwgConverter(config.dwg_converter).convert(
-                source_copy,
-                project_directory / "data" / "raw" / f"{source_copy.stem}.dxf",
-            )
 
         report(8, "DXF 도면의 선 객체 읽는 중")
-        reader = DxfReader(dxf_path, config.chord_tolerance,
+        reader = DxfReader(source_copy, config.chord_tolerance,
                            on_progress=lambda percent, message: report(8 + 7 * percent // 100, message))
         lines_by_layer = reader.lines_by_layer()
         cad_warnings = _cad_skip_issues(reader)
@@ -630,13 +575,6 @@ class ProjectService:
         transformed_layer.name = "linework"
         transformed_layer.display_name = "선형"
         transformed_layer.category = "route"
-        if config.project_type == "linear":
-            buffer_source_layers = config.source_layers
-            buffer_lines = {layer_name: reader.read_layer(layer_name) for layer_name in buffer_source_layers}
-            buffer_source = transform_layer(create_linework_layer(buffer_lines, config.source_crs), config.output_crs)
-        else:
-            buffer_source_layers = source_layers
-            buffer_source = transformed_layer
         route = RouteGeometry(
             original=original_layer,
             transformed=transformed_layer,
@@ -645,11 +583,9 @@ class ProjectService:
             output_crs=config.output_crs,
         )
         report(22, "분석범위 Buffer 생성 중")
-        aoi = create_aoi_layer(buffer_source, config.buffer_distance)
+        aoi = create_aoi_layer(transformed_layer, config.buffer_distance)
         report(27, "선형·분석범위 Geometry 및 좌표계 검증 중")
-        issues = cad_warnings + validate_route_and_aoi(buffer_source, aoi) + korea_sanity_issues(transformed_layer)
-        if buffer_source is not transformed_layer:
-            issues = validate_layer(transformed_layer) + issues
+        issues = cad_warnings + validate_route_and_aoi(transformed_layer, aoi) + korea_sanity_issues(transformed_layer)
         if any(issue.severity == "error" for issue in issues):
             raise RouteGISError("노선 또는 분석 범위 자동 검증에 실패했습니다.")
 
@@ -815,19 +751,16 @@ class ProjectService:
         report(95, "Manifest 및 처리 보고서 작성 중")
         manifest_payload = {
             "project": config.project_name,
-            "project_type": config.project_type,
             "status": state.value,
             "source": {
                 "filename": config.source_drawing.name,
                 "sha256": source_digest,
                 "layers": list(route.source_layers),
-                "dwg_converter": config.dwg_converter.name if config.dwg_converter else None,
             },
             "route": {
                 "source_crs": config.source_crs,
                 "output_crs": config.output_crs,
                 "buffer": config.buffer_distance,
-                "buffer_source_layers": list(buffer_source_layers),
                 "length_m": route.length,
                 "bbox": route.bbox,
                 "aoi_bbox": aoi.bounds,

@@ -48,7 +48,7 @@ jobs:
           uv venv build/wheel-smoke --python 3.12
           uv pip install --python build/wheel-smoke/bin/python dist/*.whl
           build/wheel-smoke/bin/routegis build tests/fixtures/sample_route.dxf \
-            --project-name release-smoke --project-type non_linear \
+            --project-name release-smoke \
             --source-crs EPSG:5186 --output-crs EPSG:5186 --buffer 1000 \
             --output build/wheel-smoke-output --fixture tests/fixtures/spatial_mock.json
           jq -e '.status == "COMPLETED" and (.layers | map(.id)) == ["ecology_nature", "land_ownership", "heritage_protection", "power_line", "power_support", "river_area"] and all(.layers[]; .status == "success")' \

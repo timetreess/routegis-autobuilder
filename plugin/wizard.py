@@ -56,7 +56,7 @@ class RouteGISWizard(QWizard):
         self.recent = QSettings("RouteGIS", "AutoBuilder")
         self.service = ProjectService(self.settings)
         self.result = None
-        self.project_type = None
+        self.drawing_analyzed = False
         self._vworld_task = None
         self._vworld_cursor_active = False
         self._build_task = None
@@ -363,7 +363,7 @@ class RouteGISWizard(QWizard):
         self.analysis_stage.setText("도면 분석 대기 · 도면 분석 버튼을 눌러 주세요.")
         self.analysis_elapsed.setText("파일 읽기 → 선 객체 분석 → 좌표계 추천 → 지도 표시")
         self.analysis_log.clear()
-        self.project_type = None
+        self.drawing_analyzed = False
         self._preview_timer.stop()
         self._preview.clear_drawing()
         self.service.last_coordinate_report = None
@@ -468,7 +468,7 @@ class RouteGISWizard(QWizard):
             warning_suffix = "\n경고:\n" + "\n".join(
                 f"- {issue.layer}: {issue.message}" for issue in self.service.last_cad_warnings
             )
-        self.project_type = "non_linear"
+        self.drawing_analyzed = True
         self.cad_status.setText(
             "표시된 모든 지원 선 객체를 기준으로 사업구간 주변 범위를 만듭니다."
             + warning_suffix
@@ -590,7 +590,7 @@ class RouteGISWizard(QWizard):
     def validateCurrentPage(self) -> bool:
         if self._analysis_task is not None or self._preview_iterator is not None:
             return False
-        if self.currentId() == self._cad_page_id and self.project_type is None:
+        if self.currentId() == self._cad_page_id and not self.drawing_analyzed:
             QMessageBox.warning(self, "도면 분석 필요", "도면 분석을 실행해 주세요.")
             return False
         if self.currentId() == self._cad_page_id:
@@ -836,12 +836,11 @@ class RouteGISWizard(QWizard):
         data_go_kr_service_key = ""
         try:
             self._save_credentials()
-            if self.project_type is None:
+            if not self.drawing_analyzed:
                 raise RouteGISError("도면 분석을 실행해 주세요.")
             config = ProjectConfig(
                 project_name=self.project_name.text().strip(),
                 source_drawing=self._drawing_path(),
-                source_layers=(),
                 source_crs=self._crs_code(self.source_crs),
                 output_crs=self._crs_code(self.output_crs),
                 buffer_distance=self.buffer_distance.value(),
@@ -850,7 +849,6 @@ class RouteGISWizard(QWizard):
                 export_shapefile=True,
                 snap_tolerance=self.settings.snap_tolerance,
                 chord_tolerance=self.settings.chord_tolerance,
-                project_type="non_linear",
             )
             api_key = (
                 self.vworld_api_key.text().strip()
@@ -908,7 +906,6 @@ class RouteGISWizard(QWizard):
             self.recent.setValue("output_directory", self.output_directory.text())
             self.recent.setValue("drawing", self.drawing.text())
             self.recent.setValue("business_region", self.business_region.currentText())
-            self.recent.remove("domain")
             self.recent.sync()
             lines = [
                 "프로젝트 생성 결과",
@@ -987,8 +984,6 @@ class RouteGISWizard(QWizard):
             QMessageBox.critical(self, "프로젝트 열기 실패", "생성된 QGIS 프로젝트를 열 수 없습니다.")
             return
         route_layers = QgsProject.instance().mapLayersByName("선형")
-        if not route_layers:
-            route_layers = QgsProject.instance().mapLayersByName("노선 중심선")
         if route_layers:
             self.iface.mapCanvas().setExtent(route_layers[0].extent())
         self.iface.mapCanvas().refresh()

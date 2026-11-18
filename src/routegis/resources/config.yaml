@@ -28,8 +28,5 @@ osm:
 cad:
   snap_tolerance: 0.1
   chord_tolerance: 0.1
-export:
-  geopackage: true
-  shapefile: true
 qgis:
   template_version: "3.40.0"

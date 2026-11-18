@@ -56,9 +56,9 @@ def _assert_plugin_build(project_root, plugin_parent, package, output_directory)
     config = wizard.ProjectConfig(
         project_name="Upgrade regression",
         source_drawing=Path(project_root) / "tests" / "fixtures" / "sample_route.dxf",
-        source_layers=(), source_crs="EPSG:5186", output_crs="EPSG:5186",
+        source_crs="EPSG:5186", output_crs="EPSG:5186",
         buffer_distance=1000, selected_layers=("land_ownership",),
-        output_directory=Path(output_directory), project_type="non_linear",
+        output_directory=Path(output_directory),
     )
     service = wizard.ProjectService()
     real_build = service.build

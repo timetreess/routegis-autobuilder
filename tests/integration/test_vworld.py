@@ -734,7 +734,6 @@ def test_valid_point_for_multipolygon_definition_fails_atomically():
 
     assert result.status == "failed"
     assert result.layer is None
-    assert result.output is None
     assert result.feature_count == 0
     assert result.request_count == 1
     assert result.successful_tile_count == 0
@@ -964,7 +963,6 @@ def test_unparseable_response_crs_is_an_atomic_failed_result_for_the_active_outp
 
     assert result.status == "failed"
     assert result.layer is None
-    assert result.output is None
     assert result.feature_count == 0
     assert result.request_count == 1
     assert result.successful_tile_count == 0
@@ -1197,7 +1195,6 @@ def test_scalar_vworld_error_envelope_is_an_atomic_failed_result():
 
     assert result.status == "failed"
     assert result.layer is None
-    assert result.output is None
     assert result.feature_count == 0
     assert result.request_count == 1
     assert result.successful_tile_count == 0

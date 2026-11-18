@@ -170,9 +170,3 @@ class DxfReader:
                 )
             )
         return sorted(inventory, key=lambda item: item.name.casefold())
-
-    def read_layer(self, layer_name: str) -> list[LineString]:
-        lines = self.lines_by_layer().get(layer_name, [])
-        if not lines:
-            raise CadReadError(f"선형 객체가 있는 CAD 레이어를 찾을 수 없습니다: {layer_name}")
-        return lines

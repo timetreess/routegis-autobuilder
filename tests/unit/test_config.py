@@ -130,7 +130,6 @@ def test_project_config_rejects_duplicate_selected_layers(tmp_path: Path):
     config = ProjectConfig(
         project_name="중복 레이어",
         source_drawing=drawing,
-        source_layers=("CENTER",),
         source_crs="EPSG:5186",
         output_crs="EPSG:5186",
         buffer_distance=1000,
@@ -171,7 +170,5 @@ def test_default_settings_match_the_approved_multi_provider_values():
         "osm_retry": 2,
         "snap_tolerance": 0.1,
         "chord_tolerance": 0.1,
-        "export_geopackage": True,
-        "export_shapefile": True,
         "qgis_template_version": "3.40.0",
     }

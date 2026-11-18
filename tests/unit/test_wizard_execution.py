@@ -80,7 +80,7 @@ def wizard(tmp_path):
     wizard = SimpleNamespace(
         run_button=Mock(), open_button=Mock(), progress=Mock(), recent=Mock(),
         _save_credentials=Mock(), _open_project=Mock(), service=service,
-        project_type="non_linear", project_name=_field("test"),
+        drawing_analyzed=True, project_name=_field("test"),
         business_region=SimpleNamespace(currentText=lambda: "경기도"),
         vworld_api_key=_field("entered-vworld-key"),
         data_go_kr_service_key=_field("entered-ecology-key"),
@@ -160,9 +160,9 @@ def test_failed_or_cancelled_analysis_restores_controls_without_publishing(wizar
     wizard._analysis_task = task
     wizard.sender = lambda: task
     wizard._update_analysis_elapsed = Mock()
-    wizard.project_type = None
+    wizard.drawing_analyzed = False
     _handler("_finish_analysis")(wizard, None if cancelled else "read failed entered-vworld-key", None, cancelled)
-    assert wizard._analysis_task is None and wizard.project_type is None
+    assert wizard._analysis_task is None and not wizard.drawing_analyzed
     wizard._analysis_timer.stop.assert_called_once()
     wizard._set_analysis_running.assert_called_once_with(False)
     assert "entered-vworld-key" not in wizard.analysis_stage.setText.call_args.args[0]
@@ -283,8 +283,6 @@ def test_build_does_not_execute_pipeline_on_the_ui_thread(wizard, tmp_path):
 
     wizard.service.build.assert_not_called()
     assert wizard._build_task is not None
-    assert wizard._build_task.config.project_type == "non_linear"
-    assert wizard._build_task.config.source_layers == ()
 
 
 def test_live_progress_updates_stage_and_appends_instead_of_replacing_log(wizard, tmp_path):
@@ -344,7 +342,7 @@ def test_changing_drawing_clears_previous_analysis(wizard):
 
     _handler("_invalidate_analysis")(wizard)
 
-    assert wizard.project_type is None
+    assert not wizard.drawing_analyzed
     wizard.candidate_table.setRowCount.assert_called_once_with(0)
     wizard._preview.clear_drawing.assert_called_once()
     wizard._preview_timer.stop.assert_called_once()

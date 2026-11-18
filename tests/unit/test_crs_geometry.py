@@ -6,7 +6,7 @@ from shapely.geometry.base import BaseGeometry
 import routegis.gis.crs as crs_module
 from routegis.errors import CrsError
 from routegis.gis.crs import KOREAN_PROJECTED_CRS, korea_sanity_issues, transform_geometry, transform_layer
-from routegis.gis.geometry import create_aoi_layer, create_linework_layer, create_route_layer
+from routegis.gis.geometry import create_aoi_layer, create_linework_layer
 from routegis.gis.validator import validate_route_and_aoi
 from routegis.models import SpatialFeature, SpatialLayer
 
@@ -35,7 +35,7 @@ def test_crs_transform_and_korea_sanity_check():
     assert wgs84.x == pytest.approx(127.0, abs=1e-6)
     assert wgs84.y == pytest.approx(37.0, abs=1e-6)
 
-    route = create_route_layer(LineString([(200000, 489013), (201000, 489013)]), "EPSG:5186", "CENTER")
+    route = create_linework_layer({"CENTER": [LineString([(200000, 489013), (201000, 489013)])]}, "EPSG:5186")
     assert korea_sanity_issues(route) == []
 
 
@@ -148,7 +148,7 @@ def test_korea_sanity_check_preserves_feature_envelopes_for_nonlinear_crs():
 
 
 def test_buffer_covers_route_and_has_expected_distance():
-    route = create_route_layer(LineString([(200000, 489013), (201000, 489013)]), "EPSG:5186", "CENTER")
+    route = create_linework_layer({"CENTER": [LineString([(200000, 489013), (201000, 489013)])]}, "EPSG:5186")
     aoi = create_aoi_layer(route, 1000)
 
     assert aoi.features[0].geometry.covers(route.features[0].geometry)
@@ -157,7 +157,7 @@ def test_buffer_covers_route_and_has_expected_distance():
 
 
 def test_buffer_rejects_angular_crs():
-    route = create_route_layer(LineString([(127, 37), (127.01, 37)]), "EPSG:4326", "CENTER")
+    route = create_linework_layer({"CENTER": [LineString([(127, 37), (127.01, 37)])]}, "EPSG:4326")
 
     with pytest.raises(CrsError, match="투영좌표계"):
         create_aoi_layer(route, 1000)
@@ -209,8 +209,7 @@ def test_linework_buffer_preserves_crossings_disconnected_parts_and_holes():
     assert aoi.bounds == pytest.approx((-2, -12, 262, 62))
 
 
-@pytest.mark.parametrize("mode", ["buffer", "bbox"])
-def test_empty_line_geometries_cannot_form_an_analysis_area(mode):
+def test_empty_line_geometries_cannot_form_an_analysis_area():
     route = SpatialLayer(
         name="empty", display_name="빈 선형", crs="EPSG:5186",
         geometry_type="LineString", category="route",
@@ -218,4 +217,4 @@ def test_empty_line_geometries_cannot_form_an_analysis_area(mode):
     )
 
     with pytest.raises(CrsError, match="분석 범위"):
-        create_aoi_layer(route, 1000, mode=mode)
+        create_aoi_layer(route, 1000)
