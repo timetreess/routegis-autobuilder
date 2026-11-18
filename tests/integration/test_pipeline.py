@@ -30,6 +30,7 @@ from routegis.models import (
     SpatialLayer,
 )
 from routegis.qgis import project as qgis_project_module
+from routegis.qgis.renderers import add_renderer
 
 
 EXPECTED_QGIS_GROUPS = (
@@ -152,7 +153,7 @@ def test_headless_renderer_uses_approved_default_layer_styles(
 ):
     map_layer = ET.Element("maplayer")
 
-    qgis_project_module._renderer(map_layer, layer, shapefile=True)
+    add_renderer(map_layer, layer, shapefile=True)
 
     symbol_layer = map_layer.find("./renderer-v2/symbols/symbol/layer")
     assert symbol_layer is not None
@@ -181,7 +182,7 @@ def test_headless_renderer_categorizes_land_ownership_by_lbl():
     )
     map_layer = ET.Element("maplayer")
 
-    qgis_project_module._renderer(map_layer, layer, shapefile=True)
+    add_renderer(map_layer, layer, shapefile=True)
 
     assert float(map_layer.findtext("layerOpacity", "1")) == pytest.approx(0.7)
     renderer = map_layer.find("./renderer-v2")

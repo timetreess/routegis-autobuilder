@@ -26,15 +26,6 @@ GROUPS = (
     "11_기본도",
 )
 
-STYLE_NAMES = {
-    "ecology_nature": "ecology",
-    "heritage_protection": "heritage",
-    "river_centerline": "river_line",
-    "river_area": "river_area",
-    "power_line": "power_line",
-    "power_support": "power_support",
-}
-
 QGIS_METADATA_FIELDS = (
     "provider",
     "publisher",
@@ -70,7 +61,7 @@ class VectorSource(NamedTuple):
     encoding: str
 
 
-def _project_relative_path(
+def project_relative_path(
     project_directory: Path,
     path: Path,
     *,
@@ -86,7 +77,7 @@ def _project_relative_path(
         ) from exc
 
 
-def _group_for(layer: SpatialLayer) -> str:
+def group_for(layer: SpatialLayer) -> str:
     return {
         "route": "01_노선",
         "land": "10_토지",
@@ -102,10 +93,10 @@ def _group_for(layer: SpatialLayer) -> str:
     }.get(layer.category, "08_시설물")
 
 
-def _group_labels(layers: list[SpatialLayer]) -> dict[str, str]:
+def group_labels(layers: list[SpatialLayer]) -> dict[str, str]:
     feature_counts: dict[str, int] = {}
     for layer in layers:
-        name = _group_for(layer)
+        name = group_for(layer)
         feature_counts[name] = feature_counts.get(name, 0) + len(layer.features)
     return {
         name: f"{name} (해당없음)" if feature_counts.get(name) == 0 else name
@@ -113,17 +104,7 @@ def _group_labels(layers: list[SpatialLayer]) -> dict[str, str]:
     }
 
 
-def _style_name(layer: SpatialLayer) -> str:
-    if layer.name in STYLE_NAMES:
-        return STYLE_NAMES[layer.name]
-    if layer.name == "route_buffer":
-        return "buffer"
-    if layer.category == "route":
-        return "route"
-    return layer.category
-
-
-def _provider_properties(
+def provider_properties(
     layer_name: str,
     layer_metadata: Mapping[str, Mapping[str, str]],
 ) -> dict[str, str]:
@@ -133,12 +114,12 @@ def _provider_properties(
     return {f"routegis/{field}": metadata[field] for field in QGIS_METADATA_FIELDS}
 
 
-def _layer_id(name: str) -> str:
+def layer_id(name: str) -> str:
     digest = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()
     return f"{name}_{digest[:12]}"
 
 
-def _srs_element(parent: ET.Element, crs: str) -> None:
+def srs_element(parent: ET.Element, crs: str) -> None:
     spatial = ET.SubElement(parent, "spatialrefsys")
     ET.SubElement(spatial, "wkt").text = crs_wkt(crs, version="WKT1_GDAL")
     authority, code = crs.upper().split(":", 1)
@@ -152,7 +133,7 @@ def _srs_element(parent: ET.Element, crs: str) -> None:
     ET.SubElement(spatial, "geographicflag").text = "false"
 
 
-def _vector_source(
+def vector_source(
     project_directory: Path,
     geopackage: Path,
     layer: SpatialLayer,
@@ -169,7 +150,7 @@ def _vector_source(
     return VectorSource(
         absolute_uri=f"{geopackage}|layername={layer.name}",
         relative_uri=(
-            f"{_project_relative_path(project_directory, geopackage, label='GeoPackage')}"
+            f"{project_relative_path(project_directory, geopackage, label='GeoPackage')}"
             f"|layername={layer.name}"
         ),
         encoding="UTF-8",

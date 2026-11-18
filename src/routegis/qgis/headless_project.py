@@ -10,18 +10,18 @@ from .project_schema import (
     VWORLD_HYBRID_LAYERS,
     VWORLD_STREET_NAME,
     VWORLD_STREET_URI,
-    _group_for,
-    _group_labels,
-    _layer_id,
-    _project_relative_path,
-    _provider_properties,
-    _srs_element,
-    _vector_source,
+    group_for,
+    group_labels,
+    layer_id,
+    project_relative_path,
+    provider_properties,
+    srs_element,
+    vector_source,
 )
-from .renderers import _renderer
+from .renderers import add_renderer
 
 
-def _headless_qgs(
+def headless_qgs(
     project_name: str,
     project_directory: Path,
     geopackage: Path,
@@ -39,7 +39,7 @@ def _headless_qgs(
     ET.SubElement(root, "homePath", {"path": ""})
     ET.SubElement(root, "title").text = project_name
     project_crs = ET.SubElement(root, "projectCrs")
-    _srs_element(project_crs, layers[0].crs)
+    srs_element(project_crs, layers[0].crs)
 
     tree_root = ET.SubElement(root, "layer-tree-group")
     group_nodes = {
@@ -48,15 +48,15 @@ def _headless_qgs(
             "layer-tree-group",
             {"name": label, "checked": "Qt::Checked"},
         )
-        for name, label in _group_labels(layers).items()
+        for name, label in group_labels(layers).items()
     }
     project_layers = ET.SubElement(root, "projectlayers")
     layer_order = ET.SubElement(root, "layerorder")
     for layer in layers:
-        identifier = _layer_id(layer.name)
-        source = _vector_source(project_directory, geopackage, layer)
+        identifier = layer_id(layer.name)
+        source = vector_source(project_directory, geopackage, layer)
         ET.SubElement(
-            group_nodes[_group_for(layer)],
+            group_nodes[group_for(layer)],
             "layer-tree-layer",
             {
                 "id": identifier,
@@ -88,22 +88,22 @@ def _headless_qgs(
         ET.SubElement(map_layer, "datasource").text = source.relative_uri
         ET.SubElement(map_layer, "layername").text = layer.display_name
         srs = ET.SubElement(map_layer, "srs")
-        _srs_element(srs, layer.crs)
+        srs_element(srs, layer.crs)
         ET.SubElement(map_layer, "provider", {"encoding": source.encoding}).text = "ogr"
-        provider_properties = _provider_properties(layer.name, layer_metadata)
-        if provider_properties:
+        properties = provider_properties(layer.name, layer_metadata)
+        if properties:
             custom_properties = ET.SubElement(map_layer, "customproperties")
             options = ET.SubElement(custom_properties, "Option", {"type": "Map"})
-            for name, value in provider_properties.items():
+            for name, value in properties.items():
                 ET.SubElement(
                     options,
                     "Option",
                     {"name": name, "type": "QString", "value": value},
                 )
-        _renderer(map_layer, layer, shapefile=source.encoding == "EUC-KR")
+        add_renderer(map_layer, layer, shapefile=source.encoding == "EUC-KR")
 
-    source_id = _layer_id("source_cad")
-    source_uri = _project_relative_path(
+    source_id = layer_id("source_cad")
+    source_uri = project_relative_path(
         project_directory,
         source_drawing,
         label="원본 도면",
@@ -134,10 +134,10 @@ def _headless_qgs(
     ET.SubElement(source_layer, "datasource").text = source_uri
     ET.SubElement(source_layer, "layername").text = "원본 CAD"
     source_srs = ET.SubElement(source_layer, "srs")
-    _srs_element(source_srs, source_crs)
+    srs_element(source_srs, source_crs)
     ET.SubElement(source_layer, "provider", {"encoding": "UTF-8"}).text = "ogr"
 
-    vworld_id = _layer_id(VWORLD_STREET_NAME)
+    vworld_id = layer_id(VWORLD_STREET_NAME)
     ET.SubElement(
         group_nodes["11_기본도"],
         "layer-tree-layer",
@@ -154,7 +154,7 @@ def _headless_qgs(
     ET.SubElement(vworld_layer, "datasource").text = VWORLD_STREET_URI
     ET.SubElement(vworld_layer, "layername").text = VWORLD_STREET_NAME
     vworld_srs = ET.SubElement(vworld_layer, "srs")
-    _srs_element(vworld_srs, "EPSG:3857")
+    srs_element(vworld_srs, "EPSG:3857")
     ET.SubElement(
         vworld_layer,
         "provider",
@@ -171,7 +171,7 @@ def _headless_qgs(
         },
     )
     for layer_name, uri in VWORLD_HYBRID_LAYERS:
-        identifier = _layer_id(layer_name)
+        identifier = layer_id(layer_name)
         ET.SubElement(
             hybrid_group,
             "layer-tree-layer",
@@ -188,7 +188,7 @@ def _headless_qgs(
         ET.SubElement(map_layer, "datasource").text = uri
         ET.SubElement(map_layer, "layername").text = layer_name
         srs = ET.SubElement(map_layer, "srs")
-        _srs_element(srs, "EPSG:3857")
+        srs_element(srs, "EPSG:3857")
         ET.SubElement(
             map_layer,
             "provider",
@@ -218,7 +218,7 @@ def _headless_qgs(
     ):
         ET.SubElement(extent, tag).text = format(value, ".15g")
     destination = ET.SubElement(canvas, "destinationsrs")
-    _srs_element(destination, route.crs)
+    srs_element(destination, route.crs)
     properties = ET.SubElement(root, "properties")
     # QGIS discards projectCrs when this legacy reprojection flag is absent.
     spatial_ref = ET.SubElement(properties, "SpatialRefSys")

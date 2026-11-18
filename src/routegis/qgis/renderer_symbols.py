@@ -2,35 +2,48 @@ from __future__ import annotations
 
 from xml.etree import ElementTree as ET
 
+from ..styles import SymbolStyle
 
-def _fill_symbol(
-    parent: ET.Element,
-    *,
-    name: str,
-    fill: str,
-    outline: str,
-    outline_width: str,
-    outline_width_unit: str = "Point",
-) -> None:
-    symbol = ET.SubElement(
+SYMBOL_CLASSES = {"line": "SimpleLine", "fill": "SimpleFill", "marker": "SimpleMarker"}
+
+
+def number(value: float) -> str:
+    return format(value, "g")
+
+
+def symbol_properties(symbol: SymbolStyle) -> list[tuple[str, str]]:
+    """QGIS simple-symbol properties for a neutral SymbolStyle."""
+    if symbol.kind == "line":
+        return [
+            ("line_color", symbol.color),
+            ("line_style", "solid"),
+            ("line_width", number(symbol.width)),
+            ("line_width_unit", symbol.width_unit),
+        ]
+    if symbol.kind == "fill":
+        return [
+            ("color", symbol.color),
+            ("outline_color", symbol.outline),
+            ("outline_width", number(symbol.width)),
+            ("outline_width_unit", symbol.width_unit),
+        ]
+    return [
+        ("color", symbol.color),
+        ("name", "circle"),
+        ("size", number(symbol.size)),
+    ]
+
+
+def add_symbol(parent: ET.Element, symbol: SymbolStyle, *, name: str = "0") -> None:
+    element = ET.SubElement(
         parent,
         "symbol",
-        {"name": name, "type": "fill", "alpha": "1"},
+        {"name": name, "type": symbol.kind, "alpha": "1"},
     )
     symbol_layer = ET.SubElement(
-        symbol,
+        element,
         "layer",
-        {"class": "SimpleFill", "enabled": "1"},
+        {"class": SYMBOL_CLASSES[symbol.kind], "enabled": "1"},
     )
-    ET.SubElement(symbol_layer, "prop", {"k": "color", "v": fill})
-    ET.SubElement(symbol_layer, "prop", {"k": "outline_color", "v": outline})
-    ET.SubElement(
-        symbol_layer,
-        "prop",
-        {"k": "outline_width", "v": outline_width},
-    )
-    ET.SubElement(
-        symbol_layer,
-        "prop",
-        {"k": "outline_width_unit", "v": outline_width_unit},
-    )
+    for key, value in symbol_properties(symbol):
+        ET.SubElement(symbol_layer, "prop", {"k": key, "v": value})
