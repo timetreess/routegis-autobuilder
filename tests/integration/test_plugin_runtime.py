@@ -85,6 +85,21 @@ def _assert_plugin_build(project_root, plugin_parent, package, output_directory)
     assert analysis.result["analysis"].coordinate_report is not None
     assert analysis.progress[0] == 0 and analysis.progress[-1] == 80
 
+    # A drawing without supported linework is a normal result, not a crash:
+    # the Wizard then explains that no LINE/POLYLINE/LWPOLYLINE/ARC was found.
+    import ezdxf
+
+    text_only = Path(output_directory) / "text_only.dxf"
+    text_only.parent.mkdir(parents=True, exist_ok=True)
+    document = ezdxf.new()
+    document.modelspace().add_text("주석", dxfattribs={"layer": "TEXT"})
+    document.saveas(text_only)
+    empty = wizard.DrawingAnalysisTask(service.settings, text_only, "경기도")
+    assert empty.run(), empty.error
+    assert empty.result["analysis"].candidates == []
+    assert empty.result["analysis"].coordinate_report is None
+    assert empty.result["recommendations"] == []
+
     # Cancellation before worker dispatch must not publish partial results.
     cancelled = wizard.ProjectBuildTask(service, config, api_key="", data_go_kr_service_key="")
     cancelled.cancel()

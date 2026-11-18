@@ -14,6 +14,6 @@ class DrawingAnalysis:
     """Everything one DXF analysis produced; the caller owns it."""
 
     candidates: list[dict[str, Any]]
-    coordinate_report: DxfCoordinateReport
+    coordinate_report: DxfCoordinateReport | None  # None when no supported linework exists
     lines_by_layer: dict[str, list[LineString]] = field(default_factory=dict)
     warnings: tuple[ValidationIssue, ...] = ()
